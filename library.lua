@@ -2268,9 +2268,22 @@ end
 local Section = {}
 Section.__index = Section
 
+function Section:addPage(name)
+    local page = { name = name, holder = { items = {} }, owner = {} }
+    local index = #self.pages + 1
+    page.owner.onClick = function()
+        if self.current ~= index then
+            self.current = index
+            closeOpenElement()
+        end
+    end
+    self.pages[index] = page
+    return page
+end
+
 function Section:contentHeight(w)
     local total = 0
-    local items = self.holder.items
+    local items = self.pages[self.current].holder.items
     for i, item in ipairs(items) do
         total = total + item:height(w - 28) + (i > 1 and 3 or 0)
     end
@@ -2281,22 +2294,54 @@ function Section:height(w)
     return 33 + self:contentHeight(w)
 end
 
+function Section:drawTitles(x, y)
+    if #self.pages == 1 then
+        drawText(x, y, self.name, COL.text, true)
+        return
+    end
+    local tx = x
+    for i, page in ipairs(self.pages) do
+        if i > 1 then
+            drawText(tx + 4, y, "-", COL.placeholder, true)
+            tx = tx + textWidth("-") + 8
+        end
+        local tw = textWidth(page.name)
+        region(tx, y, tw, 12, page.owner)
+        local color = COL.text
+        if i ~= self.current then
+            color = hovered(page.owner) and COL.heading or packColor(themes.preset.unselected_text)
+        end
+        drawText(tx, y, page.name, color, true)
+        tx = tx + tw
+    end
+end
+
 function Section:draw(x, y, w)
     local h = self:height(w)
     fillRect(x, y + 4, x + w, y + h, COL.c8)
     frame(x + 2, y + 6, w - 4, h - 8, COL.c22, COL.c56)
     local ex, ey, ew = x + 14, y + 18, w - 28
-    for _, item in ipairs(self.holder.items) do
-        local ih = item:height(ew)
-        item:draw(ex, ey, ew)
-        ey = ey + ih + 3
+    for i, page in ipairs(self.pages) do
+        if i == self.current then
+            for _, item in ipairs(page.holder.items) do
+                local ih = item:height(ew)
+                item:draw(ex, ey, ew)
+                ey = ey + ih + 3
+            end
+        else
+            for _, item in ipairs(page.holder.items) do
+                item:skip()
+            end
+        end
     end
-    drawText(x + 8, y + 4 - 6, self.name, COL.text, true)
+    self:drawTitles(x + 8, y + 4 - 6)
 end
 
 function Section:skip()
-    for _, item in ipairs(self.holder.items) do
-        item:skip()
+    for _, page in ipairs(self.pages) do
+        for _, item in ipairs(page.holder.items) do
+            item:skip()
+        end
     end
 end
 
@@ -2306,9 +2351,27 @@ function library:section(properties)
         side = properties.side or properties.Side or "left",
     }
     local column = self[cfg.side] or self.left
-    local section = setmetatable({ name = cfg.name, holder = { items = {} } }, Section)
+    local section = setmetatable({ name = cfg.name, pages = {}, current = 1 }, Section)
+    section.holder = section:addPage(cfg.name).holder
     table.insert(column.items, section)
     cfg.holder = section.holder
+    cfg._section = section
+    return setmetatable(cfg, library)
+end
+
+function library:subtab(properties)
+    local section = self._section
+    if not section then
+        return nil
+    end
+    if type(properties) == "string" then
+        properties = { name = properties }
+    end
+    local cfg = {
+        name = properties.name or properties.Name or "Page",
+        side = self.side,
+    }
+    cfg.holder = section:addPage(cfg.name).holder
     cfg._section = section
     return setmetatable(cfg, library)
 end

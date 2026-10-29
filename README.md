@@ -42,6 +42,15 @@ aim:keybind({ flag = "aim_key", keys = { Enum.UserInputType.MouseButton1, Enum.U
 
 That shows `[mb1] [mb2]` on the row. Click either box to rebind just that one (Escape or Backspace clears it, and `"..."` in the list starts a box empty). The bind is active while any of its keys is held, or any of them toggles it in press mode. Its flag also gets a `keys` list, and configs save every key.
 
+A section can have sub tabs. Call `subtab` on it and add elements to what that returns:
+
+```lua
+local prediction = aim:subtab({ name = "prediction" })
+prediction:toggle({ name = "bullet drop", flag = "pred_drop" })
+```
+
+The panel's title then reads `aimbot - prediction`. Clicking a name switches what the panel shows. Elements on the hidden sub tab keep working, so their keybinds and flags stay live.
+
 ## Other stuff
 
 - `window.toggle_watermark(true)` and `window.set_watermark_position("top right")`
