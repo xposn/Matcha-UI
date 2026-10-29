@@ -1415,6 +1415,16 @@ local function accentColor(alpha)
     return packColor(themes.preset.accent, alpha)
 end
 
+local function resizeGrip(rx, ry, owner)
+    region(rx - 10, ry - 10, 12, 12, owner)
+    local color = Hit.drag == owner and accentColor() or hovered(owner) and grey(170) or grey(110)
+    for i = 0, 2 do
+        for j = 0, 2 - i do
+            fillRect(rx - i * 3 - 2, ry - j * 3 - 2, rx - i * 3, ry - j * 3, color)
+        end
+    end
+end
+
 local POPUP_ROW, POPUP_HEAD = 15, 15
 
 local function popupHeight(rows, title)
@@ -1970,7 +1980,6 @@ function library:window(properties)
         end
         local x, y, w, h = window.x, window.y, window.w, window.h
         region(x, y, w, h, window.drag)
-        region(x + w - 10, y + h - 10, 10, 10, window.resize)
         frame(x, y, w, h, COL.c40, COL.c8)
         fillRect(x + 2, y + 2, x + w - 2, y + h - 2, COL.c26)
         local mx, my, mw, mh = x + 4, y + 4, w - 8, h - 8
@@ -1996,6 +2005,7 @@ function library:window(properties)
         fillRect(x, y, x + w, y + 2, accentColor())
         fillRect(x, y + 1, x + w, y + 2, COL.black50)
         alignedText(x, y - 1, w, 1, cfg.name, COL.text, 0.5, 0.5, true)
+        resizeGrip(mx + mw - 3, my + mh - 3, window.resize)
     end)
 
     local HITPART = {
@@ -2015,7 +2025,6 @@ function library:window(properties)
         local x, y, w, h = p.x, p.y, p.w, p.h
         if menuOpen() then
             region(x, y, w, h, p.drag)
-            region(x + w - 10, y + h - 10, 10, 10, p.resize)
         end
         frame(x, y, w, h, grey(56), COL.c8)
         local mx, my, mw, mh = x + 4, y + 4, w - 8, h - 8
@@ -2079,6 +2088,9 @@ function library:window(properties)
         fillRect(x, y, x + w, y + 2, accentColor())
         fillRect(x, y + 1, x + w, y + 2, COL.black50)
         alignedText(x, y - 1, w, 1, "esp preview", COL.text, 0.5, 0.5, true)
+        if menuOpen() then
+            resizeGrip(tx + tw - 3, ty + th - 3, p.resize)
+        end
     end
 
     addSurface(1, drawEspPreview)
