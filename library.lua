@@ -1362,6 +1362,12 @@ function library:get_config()
     for i, v in next, flags do
         if type(v) == "table" and v.key then
             config[i] = { active = v.active, mode = v.mode, key = tostring(v.key) }
+            if type(v.keys) == "table" then
+                config[i].keys = {}
+                for n, key in ipairs(v.keys) do
+                    config[i].keys[n] = tostring(key)
+                end
+            end
         elseif type(v) == "table" and v.Transparency and v.Color then
             local color_hex = "ffffff"
             if typeof(v.Color) == "Color3" then
@@ -1513,7 +1519,9 @@ function library:new_keybind(properties)
     end
 
     function cfg.update(n_properties)
-        if n_properties.key == nil or n_properties.key == "..." then
+        if n_properties.keyText then
+            cfg.set_parts(n_properties.text, n_properties.keyText)
+        elseif n_properties.key == nil or n_properties.key == "..." then
             cfg._prefix, cfg._key = nil, nil
             cfg._label = capitalize(n_properties.text)
             cfg._unbound = true
@@ -3008,6 +3016,77 @@ function library:keybind(properties)
     }
     flags[cfg.flag] = {}
 
+    local function normalize(value)
+        if type(value) == "string" and value ~= "..." then
+            value = library:convert_enum(value)
+        end
+        if value == nil or value == false or value == KEY_ESCAPE then
+            return "..."
+        end
+        return value
+    end
+
+    local slots = {}
+    local given = type(properties.keys) == "table" and #properties.keys > 0 and properties.keys or { cfg.key or "..." }
+    for i = 1, #given do
+        slots[i] = { key = normalize(given[i]), owner = {}, held = false, x = 0 }
+    end
+    local multi = #slots > 1
+
+    local function bound(slot)
+        return slot.key ~= nil and slot.key ~= "..."
+    end
+
+    local function unbound()
+        for _, slot in ipairs(slots) do
+            if bound(slot) then
+                return false
+            end
+        end
+        return true
+    end
+
+    local function anyHeld()
+        for _, slot in ipairs(slots) do
+            if slot.held and bound(slot) then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function firstKey()
+        for _, slot in ipairs(slots) do
+            if bound(slot) then
+                return slot.key
+            end
+        end
+        return "..."
+    end
+
+    local function listText()
+        local parts = {}
+        for _, slot in ipairs(slots) do
+            if bound(slot) then
+                parts[#parts + 1] = listKeyName(slot.key)
+            end
+        end
+        return #parts > 0 and table.concat(parts, ", ") or nil
+    end
+
+    local function publish()
+        local value = { mode = cfg.mode, key = cfg.key, active = cfg.active }
+        if multi then
+            value.keys = {}
+            for i, slot in ipairs(slots) do
+                value.keys[i] = slot.key
+            end
+        end
+        flags[cfg.flag] = value
+    end
+
+    cfg.key = firstKey()
+
     local key = library:new_keybind({
         text = cfg.display,
         key = cfg.key,
@@ -3017,35 +3096,45 @@ function library:keybind(properties)
     })
 
     local element = Element.new("keybind")
-    element.textOwner = {}
     element.anchor = { x = 0, y = 0 }
-    element.text = "ERROR"
-    local captureArmed = false
+    local captureSlot = nil
 
     local KEY_PAD = 3
 
-    function element:width()
-        if self.inner then
-            return inkWidth("[") + KEY_PAD + inkWidth(self.inner) + KEY_PAD + inkWidth("]") + 1
+    local function slotWidth(slot)
+        if slot.inner then
+            return inkWidth("[") + KEY_PAD + inkWidth(slot.inner) + KEY_PAD + inkWidth("]") + 1
         end
-        return max(16, textWidth(self.text))
+        return max(16, textWidth(slot.text or "..."))
+    end
+
+    function element:width()
+        local total = 0
+        for i, slot in ipairs(slots) do
+            total = total + slotWidth(slot) + (i > 1 and 3 or 0)
+        end
+        return total
     end
 
     function element:drawRight(x, y)
-        local w = self:width()
         self.anchor.x, self.anchor.y = x, y
-        region(x, y, w, 12, self.textOwner)
-        if self.inner then
-            local ty = y + (12 - TEXT_H) * 0.5
-            local openW, openLb = inkWidth("[")
-            local innerW, innerLb = inkWidth(self.inner)
-            local _, closeLb = inkWidth("]")
-            local ix = x + openW + KEY_PAD
-            drawText(x - openLb, ty, "[", COL.text, true)
-            drawText(ix - innerLb, ty, self.inner, self.unbound and COL.placeholder or COL.text, true)
-            drawText(ix + innerW + KEY_PAD - closeLb, ty, "]", COL.text, true)
-        else
-            alignedText(x, y, w, 12, self.text, COL.text, 0.5, 0.5, true)
+        for _, slot in ipairs(slots) do
+            local w = slotWidth(slot)
+            slot.x = x
+            region(x, y, w, 12, slot.owner)
+            if slot.inner then
+                local ty = y + (12 - TEXT_H) * 0.5
+                local openW, openLb = inkWidth("[")
+                local innerW, innerLb = inkWidth(slot.inner)
+                local _, closeLb = inkWidth("]")
+                local ix = x + openW + KEY_PAD
+                drawText(x - openLb, ty, "[", COL.text, true)
+                drawText(ix - innerLb, ty, slot.inner, slot.unbound and COL.placeholder or COL.text, true)
+                drawText(ix + innerW + KEY_PAD - closeLb, ty, "]", COL.text, true)
+            else
+                alignedText(x, y, w, 12, slot.text or "...", COL.text, 0.5, 0.5, true)
+            end
+            x = x + w + 3
         end
     end
 
@@ -3062,7 +3151,7 @@ function library:keybind(properties)
     local modeOptions = {}
 
     local function updateList()
-        key.update({ text = cfg.display, key = cfg.key, mode = cfg.mode })
+        key.update({ text = cfg.display, key = cfg.key, mode = cfg.mode, keyText = multi and listText() or nil })
     end
 
     function cfg.set_display(text)
@@ -3088,45 +3177,46 @@ function library:keybind(properties)
         elseif mode == "hold" then
             cfg.set(false)
         end
-        flags[cfg.flag] = { mode = cfg.mode, key = cfg.key, active = cfg.active }
-    end
-
-    local function unbound()
-        return cfg.key == nil or cfg.key == "..."
+        publish()
     end
 
     local function showKey()
+        cfg.key = firstKey()
         cfg.key_name = keyName(cfg.key)
-        if unbound() then
-            element.text, element.inner, element.unbound = "[none]", "none", true
-        else
-            element.inner = string.lower(cfg.key_name)
-            element.text, element.unbound = "[" .. element.inner .. "]", false
+        for _, slot in ipairs(slots) do
+            if bound(slot) then
+                slot.inner = string.lower(keyName(slot.key))
+                slot.text, slot.unbound = "[" .. slot.inner .. "]", false
+            else
+                slot.text, slot.inner, slot.unbound = "[none]", "none", true
+            end
         end
     end
 
-    function cfg.set(input)
+    function cfg.set(input, index)
         if type(input) == "boolean" then
             local cached = input
             if cfg.mode == "always" or unbound() then
                 cached = true
             end
             cfg.active = cached
-            flags[cfg.flag] = { mode = cfg.mode, key = cfg.key, active = cfg.active }
+            publish()
             key.set_active(cached and true or false)
             cfg.callback(cached)
         elseif isKeyItem(input) then
             if input == KEY_ESCAPE or input == KEY_BACKSPACE then
                 input = "..."
             end
-            cfg.key = input or "..."
+            local slot = slots[index or 1] or slots[1]
+            slot.key = input or "..."
+            slot.held = false
             showKey()
             if unbound() then
                 cfg.active = true
             elseif cfg.mode == "hold" then
-                cfg.active = false
+                cfg.active = anyHeld()
             end
-            flags[cfg.flag] = { mode = cfg.mode, key = cfg.key, active = cfg.active }
+            publish()
             updateList()
             cfg.callback(cfg.active or false)
         elseif input == "toggle" or input == "hold" or input == "always" then
@@ -3134,17 +3224,27 @@ function library:keybind(properties)
             if input == "always" then
                 cfg.active = true
             end
-            flags[cfg.flag] = { mode = cfg.mode, key = cfg.key, active = cfg.active }
+            publish()
             cfg.callback(cfg.active or false)
         elseif type(input) == "table" then
-            local newKey = input.key
-            if type(newKey) == "string" and newKey ~= "..." then
-                newKey = library:convert_enum(newKey)
+            if multi and type(input.keys) == "table" then
+                for i, slot in ipairs(slots) do
+                    slot.key = normalize(input.keys[i])
+                    slot.held = false
+                end
+            else
+                local newKey = normalize(input.key)
+                local present = false
+                for _, slot in ipairs(slots) do
+                    if slot.key == newKey then
+                        present = true
+                    end
+                end
+                if not multi or (newKey ~= "..." and not present) then
+                    slots[1].key = newKey
+                    slots[1].held = false
+                end
             end
-            if newKey == KEY_ESCAPE then
-                newKey = "..."
-            end
-            cfg.key = newKey or "..."
             cfg.mode = input.mode or "toggle"
             if input.active then
                 cfg.active = input.active
@@ -3152,12 +3252,12 @@ function library:keybind(properties)
             if unbound() then
                 cfg.active = true
             end
-            flags[cfg.flag] = { mode = cfg.mode, key = cfg.key, active = cfg.active }
             showKey()
+            publish()
             updateList()
         end
         if cfg.keybind_name then
-            key.set_parts(cfg.keybind_name, listKeyName(cfg.key))
+            key.set_parts(cfg.keybind_name, multi and listText() or listKeyName(cfg.key))
             key.set_visible(cfg.active and true or false)
         end
         key.set_active(cfg.active and true or false)
@@ -3188,29 +3288,34 @@ function library:keybind(properties)
         if not cfg.open then
             return
         end
-        local x, y, w = element.anchor.x, element.anchor.y + 15, 57
+        local opener = cfg.popupSlot or slots[1]
+        local x, y, w = opener.x, element.anchor.y + 15, 57
         local hgt = popupHeight(#modeOptions, "mode")
-        registerPopup(x, y, x + w, y + hgt, element.textOwner, "right", closeModes)
+        registerPopup(x, y, x + w, y + hgt, opener.owner, "right", closeModes)
         local oy = popupChrome(x, y, w, hgt, "mode")
         for _, option in ipairs(modeOptions) do
             oy = popupRow(x, oy, w, option.owner, option.text, optionColor(option.owner, cfg.mode == option.mode))
         end
     end)
 
-    element.textOwner.onRightClick = function()
-        cfg.open = not cfg.open
-        cfg.set_visible(cfg.open)
-    end
-
-    element.textOwner.onDown = function()
-        captureArmed = true
+    for i, slot in ipairs(slots) do
+        slot.owner.onRightClick = function()
+            cfg.popupSlot = slot
+            cfg.open = not cfg.open
+            cfg.set_visible(cfg.open)
+        end
+        slot.owner.onDown = function()
+            captureSlot = i
+        end
     end
 
     addUpdater(function()
-        if captureArmed then
-            captureArmed = false
-            element.text = "..."
-            element.inner = nil
+        if captureSlot then
+            local index = captureSlot
+            captureSlot = nil
+            showKey()
+            local slot = slots[index]
+            slot.text, slot.inner = "...", nil
             if cfg.binding then
                 cfg.binding:Disconnect()
             end
@@ -3227,18 +3332,29 @@ function library:keybind(properties)
                     cfg.binding:Disconnect()
                     cfg.binding = nil
                 end
-                cfg.set(captured)
+                cfg.set(captured, index)
                 updateList()
             end)
         end
     end)
 
+    local function pressedKey(input)
+        return input.UserInputType == UIT.Keyboard and input.KeyCode or input.UserInputType
+    end
+
     library:connection(uis.InputBegan, function(input, game_event)
         if game_event or cfg.binding then
             return
         end
-        local selected_key = input.UserInputType == UIT.Keyboard and input.KeyCode or input.UserInputType
-        if selected_key == cfg.key then
+        local selected_key = pressedKey(input)
+        local matched = false
+        for _, slot in ipairs(slots) do
+            if bound(slot) and selected_key == slot.key then
+                slot.held = true
+                matched = true
+            end
+        end
+        if matched then
             if cfg.mode == "toggle" then
                 cfg.set(not cfg.active)
             elseif cfg.mode == "hold" then
@@ -3248,8 +3364,15 @@ function library:keybind(properties)
     end)
 
     library:connection(uis.InputEnded, function(input)
-        local selected_key = input.UserInputType == UIT.Keyboard and input.KeyCode or input.UserInputType
-        if selected_key == cfg.key and cfg.mode == "hold" then
+        local selected_key = pressedKey(input)
+        local matched = false
+        for _, slot in ipairs(slots) do
+            if bound(slot) and selected_key == slot.key then
+                slot.held = false
+                matched = true
+            end
+        end
+        if matched and cfg.mode == "hold" and not anyHeld() then
             cfg.set(false)
         end
     end)

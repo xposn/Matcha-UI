@@ -34,6 +34,14 @@ The keybind and colorpicker there have no name, so they sit on the right side of
 
 Every element keeps its value in `library.flags` under its flag, so you can check things like `library.flags.aim_enabled` from anywhere. Keybinds store a table with `key`, `mode` and `active`.
 
+A keybind can have more than one key. Pass `keys` instead of `key`:
+
+```lua
+aim:keybind({ flag = "aim_key", keys = { Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2 }, mode = "hold" })
+```
+
+That shows `[mb1] [mb2]` on the row. Click either box to rebind just that one (Escape or Backspace clears it, and `"..."` in the list starts a box empty). The bind is active while any of its keys is held, or any of them toggles it in press mode. Its flag also gets a `keys` list, and configs save every key.
+
 ## Other stuff
 
 - `window.toggle_watermark(true)` and `window.set_watermark_position("top right")`
