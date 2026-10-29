@@ -2302,8 +2302,7 @@ function Section:drawTitles(x, y)
     local tx = x
     for i, page in ipairs(self.pages) do
         if i > 1 then
-            drawText(tx + 4, y, "-", COL.placeholder, true)
-            tx = tx + textWidth("-") + 8
+            tx = tx + 8
         end
         local tw = textWidth(page.name)
         region(tx, y, tw, 12, page.owner)

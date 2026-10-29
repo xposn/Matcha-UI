@@ -49,7 +49,7 @@ local prediction = aim:subtab({ name = "prediction" })
 prediction:toggle({ name = "bullet drop", flag = "pred_drop" })
 ```
 
-The panel's title then reads `aimbot - prediction`. Clicking a name switches what the panel shows. Elements on the hidden sub tab keep working, so their keybinds and flags stay live.
+The panel's title then shows both names side by side. Clicking a name switches what the panel shows. Elements on the hidden sub tab keep working, so their keybinds and flags stay live.
 
 ## Other stuff
 
