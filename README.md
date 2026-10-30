@@ -62,6 +62,7 @@ local client = enemies:subtab({ name = "client" })
 ## Other stuff
 
 - `window.toggle_watermark(true)` and `window.set_watermark_position("top right")`
+- `window.set_watermark_info({ "user", "display", "game", "ping", "fps" })` picks what the watermark shows
 - `window.toggle_list(true)` shows the keybind list
 - `window.set_info(title, lines)` and `window.toggle_info_list(true)` for the info box
 - `window.set_menu_visibility(false)` hides the menu
@@ -74,6 +75,6 @@ Configs go in `Pepsi UI/configs` in your Matcha workspace. Give the window a gam
 local window = library:window({ name = "my menu", game = "Apocalypse Rising 2" })
 ```
 
-That saves to `Pepsi UI/Apocalypse Rising 2`, and the game name also shows in the watermark.
+That saves to `Pepsi UI/Apocalypse Rising 2`, and the game name also shows in the watermark after your username and display name, followed by your ping.
 
 Run `demo.lua` to see all of it. Insert opens and closes the menu.

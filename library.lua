@@ -1873,25 +1873,68 @@ function library:window(properties)
         x = 20,
         y = 20,
         visible = true,
-        parts = { cfg.name, cfg.game or "Apocalypse Rising 2" },
+        user = tostring(LocalPlayer.Name or ""),
+        show = { user = true, display = true, game = true, ping = true },
+        frames = 0,
+        nextStat = 0,
     }
-    local user = tostring(LocalPlayer.Name or "")
-    if user ~= "" then
-        watermark.parts[3] = user
+    local function setSegments()
+        local show = watermark.show
+        local user, display = watermark.user, watermark.display or watermark.user
+        local name = ""
+        if show.user and show.display and display ~= user then
+            name = user .. " [" .. display .. "]"
+        elseif show.user then
+            name = user
+        elseif show.display then
+            name = display
+        end
+        local title, info = { cfg.name, text = cfg.name }, {}
+        for _, part in ipairs({ name, show.game and (cfg.game or "Apocalypse Rising 2") or "", show.ping and watermark.ping or "", show.fps and watermark.fps or "" }) do
+            if part ~= "" then
+                info[#info + 1] = part
+            end
+        end
+        info.text = table.concat(info, " | ")
+        watermark.segments = #info > 0 and { title, info } or { title }
     end
-    watermark.text = table.concat(watermark.parts, " | ")
+    setSegments()
     watermark.drag = makeDraggable(watermark)
     Layout.watermarks[#Layout.watermarks + 1] = watermark
+    task.spawn(function()
+        local ok, data = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet("https://users.roblox.com/v1/users/" .. LocalPlayer.UserId))
+        end)
+        if ok and type(data) == "table" and type(data.displayName) == "string" and data.displayName ~= "" then
+            watermark.display = data.displayName
+            setSegments()
+        end
+    end)
 
     addSurface(2, function()
         if not watermark.visible then
             Notifications.inset = 0
+            watermark.statAt = nil
             return
         end
-        local text = watermark.text
-        local lb = glyphBearings(string.sub(text, 1, 1))
-        local _, rb = glyphBearings(string.sub(text, -1))
-        local w, h = textWidth(text) - CHAR_W + rb + 1 - lb + 20, 26
+        local now = os.clock()
+        watermark.frames = watermark.frames + 1
+        if now >= watermark.nextStat then
+            local elapsed = watermark.statAt and now - watermark.statAt or 0
+            local fps = elapsed > 0 and round(watermark.frames / elapsed) .. "fps" or nil
+            local ok, ping = pcall(GetPingValue)
+            ping = ok and tonumber(ping) and round(ping) .. "ms" or nil
+            watermark.frames, watermark.statAt, watermark.nextStat = 0, now, now + 1
+            if fps ~= watermark.fps or ping ~= watermark.ping then
+                watermark.fps, watermark.ping = fps, ping
+                setSegments()
+            end
+        end
+        local segments = watermark.segments
+        local w, h = 0, 26
+        for i, segment in ipairs(segments) do
+            w = w + inkWidth(segment.text) + 20 + (i > 1 and 5 or 0)
+        end
         local anchor = WATERMARK_ANCHORS[watermark.position]
         if anchor then
             local vw, vh = Util.viewport()
@@ -1903,20 +1946,25 @@ function library:window(properties)
         if not anchor and menuOpen() then
             region(x, y, w, h, watermark.drag)
         end
-        frame(x, y, w, h, COL.c40, COL.c0)
-        fillRect(x + 2, y + 2, x + w - 2, y + h - 2, COL.c26)
-        frame(x + 4, y + 4, w - 8, h - 8, COL.c26, COL.c57)
-        local tx = x + 10 - lb
-        for i, part in ipairs(watermark.parts) do
-            if i > 1 then
-                drawText(tx + CHAR_W, y + 6, "|", COL.placeholder, true, "WatermarkText")
-                tx = tx + 3 * CHAR_W
+        for i, segment in ipairs(segments) do
+            local iw, lb = inkWidth(segment.text)
+            local bw = iw + 20
+            frame(x, y, bw, h, COL.c40, COL.c0)
+            fillRect(x + 2, y + 2, x + bw - 2, y + h - 2, COL.c26)
+            frame(x + 4, y + 4, bw - 8, h - 8, COL.c26, COL.c57)
+            local tx = x + 10 - lb
+            for j, part in ipairs(segment) do
+                if j > 1 then
+                    drawText(tx + CHAR_W, y + 6, "|", COL.placeholder, true, "WatermarkText")
+                    tx = tx + 3 * CHAR_W
+                end
+                drawText(tx, y + 6, part, i == 1 and accentColor() or COL.text, true, "WatermarkText")
+                tx = tx + textWidth(part)
             end
-            drawText(tx, y + 6, part, i == 1 and accentColor() or COL.text, true, "WatermarkText")
-            tx = tx + textWidth(part)
+            fillRect(x, y, x + bw, y + 2, accentColor())
+            fillRect(x, y + 1, x + bw, y + 2, COL.black50)
+            x = x + bw + 5
         end
-        fillRect(x, y, x + w, y + 2, accentColor())
-        fillRect(x, y + 1, x + w, y + 2, COL.black50)
     end)
 
     local window = {
@@ -2178,6 +2226,15 @@ function library:window(properties)
 
     function cfg.set_watermark_position(position)
         watermark.position = position
+    end
+
+    function cfg.set_watermark_info(list)
+        local show = {}
+        for _, name in ipairs(type(list) == "table" and list or {}) do
+            show[name] = true
+        end
+        watermark.show = show
+        setSegments()
     end
 
     function cfg.set_menu_visibility(bool)
@@ -2473,7 +2530,7 @@ function library:toggle(properties)
         else
             alignedText(inkX(rx, cfg.name), y, rw, 12, cfg.name, COL.text, 0, 0.5, true)
         end
-        drawRightItems(self.right, rx + rw + 15, y + 1)
+        drawRightItems(self.right, rx + rw, y + 1)
         local ix, iy = rx - 15, y + 1
         region(ix, iy, 10, 10, self.iconOwner)
         fillRect(ix, iy, ix + 10, iy + 10, COL.c8)
@@ -2821,6 +2878,11 @@ function library:dropdown(properties)
     return setmetatable(cfg, library)
 end
 
+local function drawSwatch(x, y, c)
+    fillRect(x, y, x + 16, y + 10, COL.c0)
+    frame(x + 2, y + 2, 12, 6, packColor(c), pack(floor(c.R * 255 + 0.5) / 2, floor(c.G * 255 + 0.5) / 2, floor(c.B * 255 + 0.5) / 2, 255))
+end
+
 function library:colorpicker(properties)
     local cfg = {
         name = properties.name or nil,
@@ -2854,10 +2916,8 @@ function library:colorpicker(properties)
 
     function element:drawRight(x, y)
         self.anchor.x, self.anchor.y = x, y
-        local c = self.color
         region(x, y, 16, 10, self.iconOwner)
-        fillRect(x, y, x + 16, y + 10, COL.c0)
-        frame(x + 2, y + 2, 12, 6, packColor(c), pack(floor(c.R * 255 + 0.5) / 2, floor(c.G * 255 + 0.5) / 2, floor(c.B * 255 + 0.5) / 2, 255))
+        drawSwatch(x, y, self.color)
     end
 
     function element:height()
@@ -2866,7 +2926,7 @@ function library:colorpicker(properties)
 
     function element:draw(x, y, w)
         namedRow(self, cfg.name, x, y, w)
-        self:drawRight(x + 13 + (w - 26) + 15 - 16, y + 1)
+        self:drawRight(x + 13 + (w - 26) - 16, y + 1)
     end
 
     local function updatePositions()
@@ -3005,7 +3065,11 @@ function library:colorpicker(properties)
         local oy = popupChrome(x, y, w, hgt, "color")
         for i, option in ipairs(menuOptions) do
             local enabled = i == 1 or ColorClipboard.color ~= nil
+            local rowY = oy
             oy = popupRow(x, oy, w, option.owner, option.text, optionColor(option.owner, false, enabled), enabled)
+            if i == 2 and ColorClipboard.color then
+                drawSwatch(x + w - 22, rowY + 3, ColorClipboard.color)
+            end
         end
     end)
 
@@ -3206,7 +3270,7 @@ function library:keybind(properties)
     function element:draw(x, y, w)
         namedRow(self, cfg.name, x, y, w)
         local width = self:width()
-        self:drawRight(x + 13 + (w - 26) + 15 - width, y + 1)
+        self:drawRight(x + 13 + (w - 26) - width, y + 1)
     end
 
     local modeOptions = {}
