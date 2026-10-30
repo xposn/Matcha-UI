@@ -51,6 +51,14 @@ prediction:toggle({ name = "bullet drop", flag = "pred_drop" })
 
 The panel's title then shows both names side by side. Clicking a name switches what the panel shows. Elements on the hidden sub tab keep working, so their keybinds and flags stay live.
 
+Give the section `subtab_style = "bar"` to get a row of tabs across the top of the panel instead. The first tab is the section's own name:
+
+```lua
+local enemies = main:section({ name = "enemies", side = "right", subtab_style = "bar" })
+local friendlies = enemies:subtab({ name = "friendlies" })
+local client = enemies:subtab({ name = "client" })
+```
+
 ## Other stuff
 
 - `window.toggle_watermark(true)` and `window.set_watermark_position("top right")`

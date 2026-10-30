@@ -255,10 +255,6 @@ local function hueAt(t)
     return 255, 0, 0
 end
 
-local function checkerValue(x, y, cell)
-    return (floor(x / cell) + floor(y / cell)) % 2 == 0 and 255 or 204
-end
-
 local IMAGES = {
     hue = Png.encode(126, 6, function(x)
         local r, g, b = hueAt((x + 0.5) / 126)
@@ -269,14 +265,6 @@ local IMAGES = {
     end),
     satBlack = Png.encode(126, 88, function(_, y)
         return 0, 0, 0, round(255 * ((y + 0.5) / 88))
-    end),
-    alphaChecker = Png.encode(126, 6, function(x, y)
-        local v = checkerValue(x, y, 3)
-        return v, v, v, round(255 * ((x + 0.5) / 126))
-    end),
-    previewChecker = Png.encode(12, 12, function(x, y)
-        local v = checkerValue(x, y, 3)
-        return v, v, v, 255
     end),
 }
 
@@ -1281,10 +1269,10 @@ function library:convert_string_rgb(str)
     for value in string.gmatch(str, "[^,]+") do
         table.insert(values, tonumber(value))
     end
-    if #values == 4 then
-        return values[1], values[2], values[3], values[4]
+    if #values == 3 then
+        return values[1], values[2], values[3]
     else
-        library:notification({ text = "Input a correct RGBA value (in the format 255, 255, 255, 0.5)" })
+        library:notification({ text = "Input a correct RGB value (in the format 255, 255, 255)" })
     end
 end
 
@@ -1459,7 +1447,7 @@ local function popupRow(x, y, w, owner, text, color, enabled)
     return y + POPUP_ROW
 end
 
-local ColorClipboard = { color = nil, alpha = nil }
+local ColorClipboard = { color = nil }
 
 local function optionColor(owner, selected, enabled)
     if enabled == false then
@@ -1974,11 +1962,11 @@ function library:window(properties)
         if not tab then
             return
         end
-        local cx, cy, cw, ch = x + 6, y + 6, w - 12, h - 12
-        local colW = (cw - 5) * 0.5
+        local cx, cy, cw, ch = x + 10, y + 6, w - 20, h - 12
+        local colW = (cw - 10) * 0.5
         Render.pushClip(cx, cy, cx + cw, cy + ch)
         tab.left:draw(cx, cy, colW, ch)
-        tab.right:draw(cx + colW + 5, cy, colW, ch)
+        tab.right:draw(cx + colW + 10, cy, colW, ch)
         Render.popClip()
     end
 
@@ -2227,7 +2215,7 @@ function Column:draw(x, y, w, h)
     for i, item in ipairs(self.items) do
         content = content + item:height(w) + (i > 1 and 6 or 0)
     end
-    content = content + 15
+    content = content + 4
     self.scroll = clamp(self.scroll, 0, max(0, content - h))
     local cy = y - self.scroll
     for _, item in ipairs(self.items) do
@@ -2265,6 +2253,8 @@ function library:tab(properties)
     return setmetatable(cfg, library)
 end
 
+local TAB_BAR_H = 20
+
 local Section = {}
 Section.__index = Section
 
@@ -2290,8 +2280,12 @@ function Section:contentHeight(w)
     return total
 end
 
+function Section:top()
+    return self.style == "bar" and TAB_BAR_H + 16 or 18
+end
+
 function Section:height(w)
-    return 33 + self:contentHeight(w)
+    return self:top() + 15 + self:contentHeight(w)
 end
 
 function Section:drawTitles(x, y)
@@ -2315,11 +2309,30 @@ function Section:drawTitles(x, y)
     end
 end
 
+function Section:drawBar(x, y, w)
+    local count, bottom = #self.pages, y + TAB_BAR_H
+    for i, page in ipairs(self.pages) do
+        local x0, x1 = round(x + (i - 1) * w / count), round(x + i * w / count)
+        local cx = i > 1 and x0 + 1 or x0
+        region(x0, y, x1 - x0, TAB_BAR_H, page.owner)
+        if i > 1 then
+            fillRect(x0, y, cx, bottom + 1, COL.c56)
+        end
+        local color = accentColor()
+        if i ~= self.current then
+            fillRect(x0, bottom, x1, bottom + 1, COL.c56)
+            color = hovered(page.owner) and COL.heading or packColor(themes.preset.unselected_text)
+        end
+        local iw, lb = inkWidth(page.name)
+        drawText(round(cx + (x1 - cx - iw) * 0.5) - lb, y + 4, page.name, color, true)
+    end
+end
+
 function Section:draw(x, y, w)
     local h = self:height(w)
     fillRect(x, y + 4, x + w, y + h, COL.c8)
     frame(x + 2, y + 6, w - 4, h - 8, COL.c22, COL.c56)
-    local ex, ey, ew = x + 14, y + 18, w - 28
+    local ex, ey, ew = x + 14, y + self:top(), w - 28
     for i, page in ipairs(self.pages) do
         if i == self.current then
             for _, item in ipairs(page.holder.items) do
@@ -2333,7 +2346,11 @@ function Section:draw(x, y, w)
             end
         end
     end
-    self:drawTitles(x + 8, y + 4 - 6)
+    if self.style == "bar" then
+        self:drawBar(x + 2, y + 6, w - 4)
+    else
+        self:drawTitles(x + 8, y + 4 - 6)
+    end
 end
 
 function Section:skip()
@@ -2350,7 +2367,7 @@ function library:section(properties)
         side = properties.side or properties.Side or "left",
     }
     local column = self[cfg.side] or self.left
-    local section = setmetatable({ name = cfg.name, pages = {}, current = 1 }, Section)
+    local section = setmetatable({ name = cfg.name, pages = {}, current = 1, style = properties.subtab_style }, Section)
     section.holder = section:addPage(cfg.name).holder
     table.insert(column.items, section)
     cfg.holder = section.holder
@@ -2809,7 +2826,6 @@ function library:colorpicker(properties)
         name = properties.name or nil,
         flag = properties.flag or tostring(2 ^ 789),
         color = properties.color or properties.default or Color3.new(1, 1, 1),
-        alpha = properties.alpha or 1,
         callback = properties.callback or function() end,
         right_holder = self.right_holder or nil,
         holder = self.holder or nil,
@@ -2817,9 +2833,8 @@ function library:colorpicker(properties)
     }
     flags[cfg.flag] = {}
 
-    local dragging_sat, dragging_hue, dragging_alpha = false, false, false
+    local dragging_sat, dragging_hue = false, false
     local h, s, v = Util.toHSV(cfg.color)
-    local a = cfg.alpha
     local menuOpen = false
     local inputText = ""
 
@@ -2830,7 +2845,7 @@ function library:colorpicker(properties)
     element.menuPos = { x = 0, y = 0 }
     element.color = cfg.color
 
-    local satOwner, hueOwner, alphaOwner = {}, {}, {}
+    local satOwner, hueOwner = {}, {}
     local inputBox = { text = "", clearOnFocus = false, owner = {} }
 
     function element:width()
@@ -2886,26 +2901,22 @@ function library:colorpicker(properties)
         updatePositions()
     end
 
-    function cfg.set(color, alpha)
+    function cfg.set(color)
         if color then
             h, s, v = Util.toHSV(color)
         end
-        if alpha then
-            a = alpha
-        end
         local Color = hsv(h, s, v)
         element.color = Color
-        inputText = math.floor(Color.R * 255) .. ", " .. math.floor(Color.G * 255) .. ", " .. math.floor(Color.B * 255) .. ", " .. library:round(a, 0.01)
+        inputText = math.floor(Color.R * 255) .. ", " .. math.floor(Color.G * 255) .. ", " .. math.floor(Color.B * 255)
         if Focus.box ~= inputBox then
             inputBox.text = inputText
         end
         cfg.color = Color
-        cfg.alpha = a
         flags[cfg.flag] = {
             Color = Color,
-            Transparency = a,
+            Transparency = 1,
         }
-        cfg.callback(Color, a)
+        cfg.callback(Color, 1)
     end
 
     function inputBox.setText(text)
@@ -2913,9 +2924,9 @@ function library:colorpicker(properties)
     end
 
     function inputBox.onFocusLost()
-        local r, g, b, alpha = library:convert_string_rgb(inputBox.text)
-        if r and g and b and alpha then
-            cfg.set(rgb(r, g, b), alpha)
+        local r, g, b = library:convert_string_rgb(inputBox.text)
+        if r and g and b then
+            cfg.set(rgb(r, g, b))
         else
             inputBox.text = inputText
         end
@@ -2934,10 +2945,8 @@ function library:colorpicker(properties)
             v = 1 - math.clamp((my - sy) / 88, 0, 1)
         elseif dragging_hue then
             h = math.clamp((mx - (px + 4)) / 130, 0, 1)
-        elseif dragging_alpha then
-            a = math.clamp((mx - (px + 4)) / 130, 0, 1)
         end
-        cfg.set(nil, nil)
+        cfg.set()
     end
 
     satOwner.onDragStart = function()
@@ -2946,17 +2955,14 @@ function library:colorpicker(properties)
     hueOwner.onDragStart = function()
         dragging_hue = true
     end
-    alphaOwner.onDragStart = function()
-        dragging_alpha = true
-    end
     local function stopDrag()
-        dragging_sat, dragging_hue, dragging_alpha = false, false, false
+        dragging_sat, dragging_hue = false, false
     end
-    satOwner.onDragEnd, hueOwner.onDragEnd, alphaOwner.onDragEnd = stopDrag, stopDrag, stopDrag
+    satOwner.onDragEnd, hueOwner.onDragEnd = stopDrag, stopDrag
     local function dragMove(mx, my)
         cfg.update_color(mx, my)
     end
-    satOwner.onDragMove, hueOwner.onDragMove, alphaOwner.onDragMove = dragMove, dragMove, dragMove
+    satOwner.onDragMove, hueOwner.onDragMove = dragMove, dragMove
 
     local menuOptions = {
         { text = "copy", owner = {} },
@@ -2964,13 +2970,13 @@ function library:colorpicker(properties)
     }
 
     menuOptions[1].owner.onClick = function()
-        ColorClipboard.color, ColorClipboard.alpha = cfg.color, cfg.alpha
+        ColorClipboard.color = cfg.color
         menuOpen = false
     end
 
     menuOptions[2].owner.onClick = function()
         if ColorClipboard.color then
-            cfg.set(ColorClipboard.color, ColorClipboard.alpha)
+            cfg.set(ColorClipboard.color)
             menuOpen = false
         end
     end
@@ -3009,8 +3015,8 @@ function library:colorpicker(properties)
         end
         local x, y = element.pickerPos.x, element.pickerPos.y
         local Color = element.color
-        registerPopup(x, y, x + 142, y + 146, element.iconOwner, "left", closePicker)
-        popupChrome(x, y, 142, 146)
+        registerPopup(x, y, x + 142, y + 134, element.iconOwner, "left", closePicker)
+        popupChrome(x, y, 142, 134)
         local px, py = x + 2, y + 2
         region(px + 4, py + 4, 130, 92, satOwner)
         fillRect(px + 4, py + 4, px + 134, py + 96, COL.c8)
@@ -3030,19 +3036,12 @@ function library:colorpicker(properties)
         drawImage("hue", px + 6, py + 100, 126, 6, 1)
         local hx = px + 6 + 126 * h + (h < 1 and 0 or -4)
         frame(hx, py + 100, 1, 6, COL.marker, COL.c0)
-        region(px + 4, py + 110, 130, 10, alphaOwner)
-        fillRect(px + 4, py + 110, px + 134, py + 120, COL.c8)
-        frame(px + 6, py + 112, 126, 6, packColor(Color), COL.c56)
-        drawImage("alphaChecker", px + 6, py + 112, 126, 6, 1)
-        local ax = px + 6 + 126 * a + (a < 1 and 0 or -4)
-        frame(ax, py + 112, 1, 6, COL.marker, COL.c0)
-        fillRect(px + 4, py + 122, px + 4 + 112, py + 138, COL.c8)
-        region(px + 6, py + 124, 108, 12, inputBox.owner)
-        frame(px + 6, py + 124, 108, 12, COL.c38, COL.c56)
-        drawFieldText(px + 6, py + 124, 108, 12, inputBox.text, "r, g, b, a", Focus.box == inputBox, true)
-        fillRect(px + 118, py + 122, px + 134, py + 138, grey(35))
-        frame(px + 120, py + 124, 12, 12, packColor(Color), COL.c0)
-        drawImage("previewChecker", px + 120, py + 124, 12, 12, a)
+        fillRect(px + 4, py + 110, px + 4 + 112, py + 126, COL.c8)
+        region(px + 6, py + 112, 108, 12, inputBox.owner)
+        frame(px + 6, py + 112, 108, 12, COL.c38, COL.c56)
+        drawFieldText(px + 6, py + 112, 108, 12, inputBox.text, "r, g, b", Focus.box == inputBox, true)
+        fillRect(px + 118, py + 110, px + 134, py + 126, grey(35))
+        frame(px + 120, py + 112, 12, 12, packColor(Color), COL.c0)
     end)
 
     if cfg.name then
@@ -3057,7 +3056,7 @@ function library:colorpicker(properties)
         end
     end
 
-    cfg.set(cfg.color, cfg.alpha)
+    cfg.set(cfg.color)
     library.config_flags[cfg.flag] = cfg.set
     return setmetatable(cfg, library)
 end
