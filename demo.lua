@@ -19,8 +19,16 @@ aimbot:slider({ flag = "aim_fov", min = 0, max = 500, default = 120, suffix = "p
 aimbot:slider({ name = "smoothness", flag = "aim_smooth", min = 1, max = 20, default = 5, interval = 0.5 })
 aimbot:dropdown({ name = "hitpart", flag = "aim_hitpart", items = { "head", "torso", "closest" }, default = "head" })
 aimbot:toggle({ name = "team check", flag = "aim_team" })
-aimbot:toggle({ name = "visible only", flag = "aim_visible" })
-aimbot:dropdown({ flag = "aim_visible_mode", items = { "raycast", "occlusion" } })
+local visibleMode
+aimbot:toggle({ name = "visible only", flag = "aim_visible", callback = function(on)
+    if visibleMode and visibleMode.set_shown then
+        visibleMode.set_shown(on)
+    end
+end })
+visibleMode = aimbot:dropdown({ flag = "aim_visible_mode", items = { "raycast", "occlusion" } })
+if visibleMode.set_shown then
+    visibleMode.set_shown(flags.aim_visible)
+end
 
 local trigger = combat:section({ name = "triggerbot", side = "right" })
 trigger:toggle({ name = "enabled", flag = "trigger_enabled" })

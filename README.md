@@ -34,6 +34,26 @@ The keybind and colorpicker there have no name, so they sit on the right side of
 
 Double-click a slider to type a value. Enter or clicking somewhere else sets it, and Escape cancels.
 
+Every element has `set_shown(bool)` and `is_shown()`. A hidden element takes no space, and the keybind or colorpicker on its right and the slider or dropdown under it hide with it. That makes it easy to show an option only when it matters:
+
+```lua
+local mode
+aim:toggle({ name = "visible only", flag = "aim_visible", callback = function(on)
+    if mode then
+        mode.set_shown(on)
+    end
+end })
+mode = aim:dropdown({ flag = "aim_visible_mode", items = { "raycast", "occlusion" } })
+mode.set_shown(library.flags.aim_visible)
+```
+
+`label` adds plain text rows. Give it `text` for one row or `lines` for several, and change them later with `set_text(text)` or `set_lines(lines)`. `set_lines(lines, true)` also scrolls its panel back to the top. An empty list shows `placeholder` in grey, and text too wide for the panel gets cut off with `...`:
+
+```lua
+local list = aim:label({ lines = { "AK-47", "M4A1" }, placeholder = "none" })
+list.set_lines({ "L96A1", "M40A1" })
+```
+
 Every element keeps its value in `library.flags` under its flag, so you can check things like `library.flags.aim_enabled` from anywhere. Keybinds store a table with `key`, `mode` and `active`.
 
 A keybind can have more than one key. Pass `keys` instead of `key`:
@@ -43,6 +63,17 @@ aim:keybind({ flag = "aim_key", keys = { Enum.UserInputType.MouseButton1, Enum.U
 ```
 
 That shows `[mb1] [mb2]` on the row. Click either box to rebind just that one (Escape or Backspace clears it, and `"..."` in the list starts a box empty). The bind is active while any of its keys is held, or any of them toggles it in press mode. Its flag also gets a `keys` list, and configs save every key.
+
+A gear opens a small popup with more settings. Put it after a toggle and it sits on the toggle's right like a colorpicker, then add elements to it the same way you add them to a panel:
+
+```lua
+aim:toggle({ name = "no recoil", flag = "no_recoil" })
+local recoil = aim:gear()
+recoil:slider({ name = "amount", flag = "no_recoil_amount", min = 0, max = 100, default = 100, suffix = "%" })
+recoil:toggle({ name = "only while aiming", flag = "no_recoil_aiming" })
+```
+
+The popup is titled with the toggle's name unless you pass `title`, `width` changes its width (212 by default), and `set_open(bool)` / `is_open()` open and close it from code. Give the gear a `name` to put it on its own row instead.
 
 A section can have sub tabs. Call `subtab` on it and add elements to what that returns:
 
@@ -60,6 +91,8 @@ local enemies = main:section({ name = "enemies", side = "right", subtab_style = 
 local friendlies = enemies:subtab({ name = "friendlies" })
 local client = enemies:subtab({ name = "client" })
 ```
+
+When the panels in a column don't fit, the tallest one gets shorter and shows its own scrollbar instead of the whole tab scrolling. The other panels keep their full size. Drag the bar or the empty space inside the panel to scroll, or click the track to jump.
 
 ## Widgets
 

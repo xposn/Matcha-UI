@@ -299,6 +299,37 @@ for key, data in pairs(IMAGES) do
     end
 end
 
+local GEAR_ALPHA = {}
+do
+    local hex = "00000dfefe11000035a6a2ffffa3a635bdffffb7b7ffffbd3dffb70000b7ff3d3dffb70000b7ff3dbdffffb7b7ffffbd35a6a2ffffa2a63500000dfefe110000"
+    for i = 1, #hex, 2 do
+        GEAR_ALPHA[#GEAR_ALPHA + 1] = tonumber(string.sub(hex, i, i + 1), 16)
+    end
+end
+
+local gearAccentKey = nil
+
+local function gearImage(color, accent)
+    local key = (accent and "gearAccent" or "gear") .. color
+    if accent and gearAccentKey ~= key then
+        if gearAccentKey then
+            imageInit[gearAccentKey] = nil
+            Render.dropPool(gearAccentKey)
+        end
+        gearAccentKey = key
+    end
+    if not imageInit[key] then
+        local r, g, b = Util.unpackColor(color)
+        local data = Png.encode(8, 8, function(x, y)
+            return r, g, b, GEAR_ALPHA[y * 8 + x + 1]
+        end)
+        imageInit[key] = function(o)
+            o.Data = data
+        end
+    end
+    return key
+end
+
 function Render.acquire(poolKey, kind, init)
     local pool = Render.pools[poolKey]
     if not pool then
@@ -366,6 +397,27 @@ function Render.beginFrame()
     table.clear(Render.clipStack)
 end
 
+function Render.dropPool(key)
+    local pool = Render.pools[key]
+    if not pool then
+        return
+    end
+    Render.pools[key] = nil
+    local objects = Render.objects
+    for _, item in ipairs(pool.items) do
+        local o = item.o
+        pcall(function()
+            o:Remove()
+        end)
+        for i = #objects, 1, -1 do
+            if objects[i] == o then
+                table.remove(objects, i)
+                break
+            end
+        end
+    end
+end
+
 function Render.endFrame()
     for _, pool in pairs(Render.pools) do
         local items = pool.items
@@ -379,13 +431,14 @@ function Render.endFrame()
     end
 end
 
-function Render.pushClip(x0, y0, x1, y1)
+function Render.pushClip(x0, y0, x1, y1, strict)
     local c = Render.clip
     Render.clipStack[#Render.clipStack + 1] = c or false
     if c then
         x0, y0, x1, y1 = max(x0, c[1]), max(y0, c[2]), min(x1, c[3]), min(y1, c[4])
+        strict = strict or c[5]
     end
-    Render.clip = { x0, y0, x1, y1 }
+    Render.clip = { x0, y0, x1, y1, strict == true }
 end
 
 function Render.popClip()
@@ -437,9 +490,18 @@ local function drawText(x, y, s, color, outline, poolKey)
     end
     local c = Render.clip
     if c then
-        local cy = y + TEXT_H * 0.5
-        if cy < c[2] or cy > c[4] or x + textWidth(s) <= c[1] or x >= c[3] then
+        if x + textWidth(s) <= c[1] or x >= c[3] then
             return
+        end
+        if c[5] then
+            if y < c[2] or y + TEXT_H > c[4] then
+                return
+            end
+        else
+            local cy = y + TEXT_H * 0.5
+            if cy < c[2] or cy > c[4] then
+                return
+            end
         end
     end
     x, y = round(x), round(y)
@@ -561,6 +623,9 @@ end
 local function drawImage(key, x, y, w, h, alpha)
     local c = Render.clip
     if c and (x + w <= c[1] or x >= c[3] or y + h <= c[2] or y >= c[4]) then
+        return
+    end
+    if c and c[5] and (x < c[1] or x + w > c[3] or y < c[2] or y + h > c[4]) then
         return
     end
     local a = floor(clamp((alpha or 1) * Render.alpha, 0, 1) * 255 + 0.5)
@@ -822,8 +887,10 @@ local function hovered(owner)
 end
 
 local Popups = { n = 0, list = {} }
+local POPUP_BLOCK = {}
 
 local function registerPopup(x0, y0, x1, y1, owner, button, close)
+    region(x0, y0, x1 - x0, y1 - y0, POPUP_BLOCK)
     local n = Popups.n + 1
     Popups.n = n
     local p = Popups.list[n]
@@ -979,11 +1046,17 @@ end
 local function closePopupsOutside(hover, button)
     local mx, my = Input.mx, Input.my
     local list = Popups.list
+    local top = 0
     for i = 1, Popups.n do
         local p = list[i]
-        local inside = mx >= p[1] and mx < p[3] and my >= p[2] and my < p[4]
+        if mx >= p[1] and mx < p[3] and my >= p[2] and my < p[4] then
+            top = i
+        end
+    end
+    for i = 1, Popups.n do
+        local p = list[i]
         local onOwner = hover ~= nil and hover == p.owner and button == p.button
-        if not inside and not onOwner then
+        if i > top and not onOwner then
             local ok, err = pcall(p.close)
             if not ok then
                 reportError(err)
@@ -2556,8 +2629,37 @@ function Column.new()
     return column
 end
 
+local SCROLL_MIN = 45
+
+function Column:fit(w, h)
+    local items, heights, total = self.items, {}, 4
+    for i, item in ipairs(items) do
+        item.cap = nil
+        heights[i] = item:height(w)
+        total = total + heights[i] + (i > 1 and 6 or 0)
+    end
+    local over = total - h
+    while over > 0 do
+        local index, room = nil, 0
+        for i, item in ipairs(items) do
+            local spare = heights[i] - (item:top() + 15 + SCROLL_MIN)
+            if spare > 0 and (not index or heights[i] > heights[index]) then
+                index, room = i, spare
+            end
+        end
+        if not index then
+            break
+        end
+        local cut = min(over, room)
+        heights[index] = heights[index] - cut
+        items[index].cap = heights[index]
+        over = over - cut
+    end
+end
+
 function Column:draw(x, y, w, h)
     region(x, y, w, h, self.owner)
+    self:fit(w, h)
     local content = 0
     for i, item in ipairs(self.items) do
         content = content + item:height(w) + (i > 1 and 6 or 0)
@@ -2606,7 +2708,7 @@ local Section = {}
 Section.__index = Section
 
 function Section:addPage(name)
-    local page = { name = name, holder = { items = {} }, owner = {} }
+    local page = { name = name, holder = { items = {} }, owner = {}, scroll = 0 }
     local index = #self.pages + 1
     page.owner.onClick = function()
         if self.current ~= index then
@@ -2619,10 +2721,12 @@ function Section:addPage(name)
 end
 
 function Section:contentHeight(w)
-    local total = 0
-    local items = self.pages[self.current].holder.items
-    for i, item in ipairs(items) do
-        total = total + item:height(w - 28) + (i > 1 and 3 or 0)
+    local total, count = 0, 0
+    for _, item in ipairs(self.pages[self.current].holder.items) do
+        if not item.hidden then
+            total = total + item:height(w - 28) + (count > 0 and 3 or 0)
+            count = count + 1
+        end
     end
     return total
 end
@@ -2632,7 +2736,71 @@ function Section:top()
 end
 
 function Section:height(w)
-    return self:top() + 15 + self:contentHeight(w)
+    local natural = self:top() + 15 + self:contentHeight(w)
+    if self.cap and self.cap < natural then
+        return self.cap
+    end
+    return natural
+end
+
+local function nearestSnap(snaps, value)
+    local best, gap = 0, math.huge
+    for _, s in ipairs(snaps) do
+        local d = abs(s - value)
+        if d < gap then
+            best, gap = s, d
+        end
+    end
+    return best
+end
+
+local function snapUp(snaps, value)
+    for _, s in ipairs(snaps) do
+        if s >= value then
+            return s
+        end
+    end
+    snaps[#snaps + 1] = value
+    return value
+end
+
+function Section:snapPoints(ew)
+    local snaps = self.snapList or {}
+    self.snapList = snaps
+    table.clear(snaps)
+    local offset = 0
+    for _, item in ipairs(self.pages[self.current].holder.items) do
+        if not item.hidden then
+            if item.rowStarts then
+                item:rowStarts(snaps, offset)
+            else
+                snaps[#snaps + 1] = offset
+            end
+            offset = offset + item:height(ew) + 3
+        end
+    end
+    return snaps
+end
+
+function Section:scrollTo(scroll)
+    local page = self.pages[self.current]
+    local before = page.scroll
+    page.scroll = self.snaps and nearestSnap(self.snaps, clamp(scroll, 0, self.range or 0)) or 0
+    if page.scroll ~= before then
+        closeOpenElement()
+    end
+end
+
+function Section:drawScrollbar(x, top, bottom)
+    local track = bottom - top
+    local thumb = min(track, max(16, floor(track * self.view / (self.view + self.range))))
+    local page = self.pages[self.current]
+    local ty = top + floor((track - thumb) * page.scroll / self.range + 0.5)
+    self.track = { top = top, height = track, thumb = thumb }
+    region(x - 2, top, 8, track, self.barOwner)
+    fillRect(x, top, x + 4, bottom, COL.c8)
+    local color = Hit.drag == self.barOwner and accentColor() or hovered(self.barOwner) and grey(170) or grey(110)
+    fillRect(x, ty, x + 4, ty + thumb, color)
 end
 
 function Section:drawTitles(x, y)
@@ -2679,19 +2847,50 @@ function Section:draw(x, y, w)
     local h = self:height(w)
     fillRect(x, y + 4, x + w, y + h, COL.c8)
     frame(x + 2, y + 6, w - 4, h - 8, COL.c22, COL.c56)
-    local ex, ey, ew = x + 14, y + self:top(), w - 28
+    local top, ew = self:top(), w - 28
+    local current = self.pages[self.current]
+    self.view = h - top - 15
+    local over = self:contentHeight(w) - self.view
+    if over > 11 then
+        self.snaps = self:snapPoints(ew)
+        self.range = snapUp(self.snaps, over)
+        current.scroll = nearestSnap(self.snaps, clamp(current.scroll, 0, self.range))
+    else
+        self.snaps, self.range, current.scroll = nil, 0, 0
+    end
+    local scrolled = self.range > 0
+    local clipTop, clipBottom = y + top - 2, y + h - 4
+    if scrolled then
+        region(x + 2, y + 6, w - 4, h - 8, self.dragOwner)
+        Render.pushClip(x + 3, clipTop, x + w - 3, clipBottom, true)
+    end
+    local ex, ey = x + 14, y + top - current.scroll
     for i, page in ipairs(self.pages) do
         if i == self.current then
             for _, item in ipairs(page.holder.items) do
-                local ih = item:height(ew)
-                item:draw(ex, ey, ew)
-                ey = ey + ih + 3
+                if item.hidden then
+                    item:skip()
+                else
+                    local ih = item:height(ew)
+                    if ey + ih < clipTop or ey > clipBottom then
+                        item:skip()
+                    else
+                        item:draw(ex, ey, ew)
+                    end
+                    ey = ey + ih + 3
+                end
             end
         else
             for _, item in ipairs(page.holder.items) do
                 item:skip()
             end
         end
+    end
+    if scrolled then
+        Render.popClip()
+        self:drawScrollbar(x + w - 10, y + top, clipBottom - 2)
+    else
+        self.track = nil
     end
     if self.style == "bar" then
         self:drawBar(x + 2, y + 6, w - 4)
@@ -2715,6 +2914,32 @@ function library:section(properties)
     }
     local column = self[cfg.side] or self.left
     local section = setmetatable({ name = cfg.name, pages = {}, current = 1, style = properties.subtab_style }, Section)
+    section.barOwner, section.dragOwner = {}, {}
+    function section.barOwner.onDragStart(mx, my)
+        local t = section.track
+        if not t then
+            return
+        end
+        local thumbY = t.top + (t.height - t.thumb) * section.pages[section.current].scroll / max(section.range, 1)
+        if my >= thumbY and my <= thumbY + t.thumb then
+            section.grab = my - thumbY
+        else
+            section.grab = t.thumb * 0.5
+            section.barOwner.onDragMove(mx, my)
+        end
+    end
+    function section.barOwner.onDragMove(_, my)
+        local t = section.track
+        if t and t.height > t.thumb then
+            section:scrollTo((my - (section.grab or 0) - t.top) / (t.height - t.thumb) * section.range)
+        end
+    end
+    function section.dragOwner.onDragStart(_, my)
+        section.dragY, section.dragScroll = my, section.pages[section.current].scroll
+    end
+    function section.dragOwner.onDragMove(_, my)
+        section:scrollTo(section.dragScroll - (my - section.dragY))
+    end
     section.holder = section:addPage(cfg.name).holder
     table.insert(column.items, section)
     cfg.holder = section.holder
@@ -2752,23 +2977,80 @@ function Element:skip()
     end
 end
 
+local function ownsOpen(element, open)
+    if element.cfg == open then
+        return true
+    end
+    for _, key in ipairs({ "right", "bottom" }) do
+        local list = element[key]
+        if list then
+            for _, child in ipairs(list.items) do
+                if child.cfg == open then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function addShown(cfg, element)
+    element.cfg = cfg
+    function cfg.set_shown(bool)
+        local hidden = not bool
+        if (element.hidden or false) == hidden then
+            return
+        end
+        element.hidden = hidden
+        if hidden then
+            local open = library.current_element_open
+            if open and ownsOpen(element, open) then
+                closeOpenElement()
+            end
+            element:skip()
+        end
+    end
+    function cfg.is_shown()
+        return not element.hidden
+    end
+end
+
+local function anyShown(list)
+    for _, item in ipairs(list.items) do
+        if not item.hidden then
+            return true
+        end
+    end
+    return false
+end
+
 local function drawRightItems(list, xEnd, y)
-    local total = 0
-    for i, item in ipairs(list.items) do
-        total = total + item:width() + (i > 1 and 3 or 0)
+    local total, count = 0, 0
+    for _, item in ipairs(list.items) do
+        if not item.hidden then
+            total = total + item:width() + (count > 0 and 3 or 0)
+            count = count + 1
+        end
     end
     local x = xEnd - total
     for _, item in ipairs(list.items) do
-        local w = item:width()
-        item:drawRight(x, y)
-        x = x + w + 3
+        if item.hidden then
+            item:skip()
+        else
+            local w = item:width()
+            item:drawRight(x, y)
+            x = x + w + 3
+        end
     end
 end
 
 local function bottomHeight(list, w)
-    local total = 0
-    for i, item in ipairs(list.items) do
-        total = total + item:barHeight(w) + (i > 1 and 4 or 0)
+    local total, count = 0, 0
+    for _, item in ipairs(list.items) do
+        if not item.hidden then
+            total = total + item:barHeight(w) + (count > 0 and 4 or 0)
+            count = count + 1
+        end
     end
     return total
 end
@@ -2776,8 +3058,12 @@ end
 local function drawBottomItems(list, x, y, w)
     local cy = y
     for _, item in ipairs(list.items) do
-        item:drawBar(x, cy, w)
-        cy = cy + item:barHeight(w) + 4
+        if item.hidden then
+            item:skip()
+        else
+            item:drawBar(x, cy, w)
+            cy = cy + item:barHeight(w) + 4
+        end
     end
 end
 
@@ -2805,7 +3091,7 @@ function library:toggle(properties)
     element.iconOwner = {}
 
     function element:height(w)
-        if #self.bottom.items > 0 then
+        if anyShown(self.bottom) then
             return 13 + bottomHeight(self.bottom, w)
         end
         return 12
@@ -2815,7 +3101,7 @@ function library:toggle(properties)
         local rx, rw = x + 13, w - 26
         local h = self:height(w)
         region(rx, y, rw, h, self.labelOwner)
-        if #self.bottom.items > 0 then
+        if anyShown(self.bottom) then
             drawText(inkX(rx, cfg.name), y, cfg.name, COL.text, true)
         else
             alignedText(inkX(rx, cfg.name), y, rw, 12, cfg.name, COL.text, 0, 0.5, true)
@@ -2862,6 +3148,7 @@ function library:toggle(properties)
     cfg.right_holder = element.right
     cfg.bottom_element = element
 
+    addShown(cfg, element)
     config_flags[cfg.flag] = cfg.set
     return setmetatable(cfg, library)
 end
@@ -3029,6 +3316,10 @@ function library:slider(properties)
         cfg.set(cfg.value)
     end
 
+    function element:onSkip()
+        cfg.dragging = false
+    end
+
     if cfg.name then
         table.insert(self.holder.items, element)
     else
@@ -3036,6 +3327,7 @@ function library:slider(properties)
     end
 
     cfg.set(cfg.default)
+    addShown(cfg, element)
     config_flags[cfg.flag] = cfg.set
     library.config_flags[cfg.flag] = cfg.set
     return setmetatable(cfg, library)
@@ -3226,6 +3518,7 @@ function library:dropdown(properties)
 
     cfg:refresh_options(cfg.items)
     cfg.set(cfg.default)
+    addShown(cfg, element)
     library.config_flags[cfg.flag] = cfg.set
     return setmetatable(cfg, library)
 end
@@ -3249,6 +3542,7 @@ function library:colorpicker(properties)
 
     local dragging_sat, dragging_hue = false, false
     local h, s, v = Util.toHSV(cfg.color)
+    local windowOpen = menuOpen
     local menuOpen = false
     local inputText = ""
 
@@ -3372,7 +3666,9 @@ function library:colorpicker(properties)
     end
     satOwner.onDragEnd, hueOwner.onDragEnd = stopDrag, stopDrag
     local function dragMove(mx, my)
-        cfg.update_color(mx, my)
+        if cfg.open then
+            cfg.update_color(mx, my)
+        end
     end
     satOwner.onDragMove, hueOwner.onDragMove = dragMove, dragMove
 
@@ -3397,6 +3693,8 @@ function library:colorpicker(properties)
         menuOpen = false
     end
 
+    element.onSkip = closeMenu
+
     local function closePicker()
         if cfg.open then
             cfg.set_visible(false)
@@ -3409,6 +3707,10 @@ function library:colorpicker(properties)
 
     addSurface(2, function()
         if not menuOpen then
+            return
+        end
+        if not windowOpen() then
+            menuOpen = false
             return
         end
         local x, y, w = element.menuPos.x, element.menuPos.y, 73
@@ -3475,8 +3777,23 @@ function library:colorpicker(properties)
     end
 
     cfg.set(cfg.color)
+    addShown(cfg, element)
     library.config_flags[cfg.flag] = cfg.set
     return setmetatable(cfg, library)
+end
+
+local function drawKeyBracket(x, top, bottom, closing)
+    local c = Render.clip
+    if c and c[5] and (top - 1 < c[2] or bottom + 2 > c[4]) then
+        return
+    end
+    local stroke = closing and x + 2 or x
+    fillRect(stroke - 1, top - 1, stroke + 2, bottom + 2, COL.c0)
+    fillRect(x - 1, top - 1, x + 4, top + 2, COL.c0)
+    fillRect(x - 1, bottom - 1, x + 4, bottom + 2, COL.c0)
+    fillRect(stroke, top, stroke + 1, bottom + 1, COL.text)
+    fillRect(x, top, x + 3, top + 1, COL.text)
+    fillRect(x, bottom, x + 3, bottom + 1, COL.text)
 end
 
 function library:keybind(properties)
@@ -3602,16 +3919,15 @@ function library:keybind(properties)
             slot.x = x
             region(x, y, w, 12, slot.owner)
             if slot.inner then
-                local ty = y + (12 - TEXT_H) * 0.5
-                local openW, openLb = inkWidth("[")
+                local ty = y - 1 + (12 - TEXT_H) * 0.5
+                local top = round(ty) + 1
                 local innerW, innerLb = inkWidth(slot.inner)
-                local _, closeLb = inkWidth("]")
-                local ix = x + openW + KEY_PAD
-                drawText(x - openLb, ty, "[", COL.text, true)
+                local ix = x + inkWidth("[") + KEY_PAD
+                drawKeyBracket(x, top, top + 8, false)
                 drawText(ix - innerLb, ty, slot.inner, slot.unbound and COL.placeholder or COL.text, true)
-                drawText(ix + innerW + KEY_PAD - closeLb, ty, "]", COL.text, true)
+                drawKeyBracket(ix + innerW + KEY_PAD, top, top + 8, true)
             else
-                alignedText(x, y, w, 12, slot.text or "...", COL.text, 0.5, 0.5, true)
+                alignedText(x, y - 1, w, 12, slot.text or "...", COL.text, 0.5, 0.5, true)
             end
             x = x + w + 3
         end
@@ -3870,7 +4186,128 @@ function library:keybind(properties)
 
     cfg.set({ mode = cfg.mode, active = cfg.active, key = cfg.key })
     updateList()
+    addShown(cfg, element)
     library.config_flags[cfg.flag] = cfg.set
+    return setmetatable(cfg, library)
+end
+
+function library:gear(properties)
+    properties = properties or {}
+    local attached = not properties.name and self.right_holder ~= nil
+    local cfg = {
+        name = properties.name or nil,
+        width = properties.width or 212,
+        open = false,
+        holder = { items = {} },
+    }
+    cfg.title = properties.title or cfg.name or (attached and self.bottom_element and self.bottom_element.name) or "settings"
+    local element = Element.new("gear")
+    element.iconOwner = {}
+    element.anchor = { x = 0, y = 0 }
+
+    local function close()
+        if cfg.open then
+            cfg.open = false
+            closeOpenElement()
+        end
+    end
+
+    function cfg.set_open(bool)
+        if bool and not cfg.open then
+            closeOpenElement()
+            cfg.open = true
+        elseif not bool then
+            close()
+        end
+    end
+
+    function cfg.is_open()
+        return cfg.open
+    end
+
+    element.iconOwner.onClick = function()
+        cfg.set_open(not cfg.open)
+    end
+
+    function element:width()
+        return 9
+    end
+
+    function element:height()
+        return 12
+    end
+
+    function element:drawRight(x, y)
+        self.seen = true
+        self.anchor.x, self.anchor.y = x, y - 1
+        region(x, y, 9, 10, self.iconOwner)
+        local key
+        if cfg.open then
+            key = gearImage(accentColor(), true)
+        else
+            key = gearImage(hovered(self.iconOwner) and COL.white or grey(170))
+        end
+        drawImage(key, x, y + 1, 8, 8, 1)
+    end
+
+    function element:draw(x, y, w)
+        if cfg.name then
+            namedRow(self, cfg.name, x, y, w)
+        end
+        self:drawRight(x + 13 + (w - 26) - 9, y + 1)
+    end
+
+    function element:onSkip()
+        close()
+    end
+
+    function element:drawPopup()
+        local seen = self.seen
+        self.seen = false
+        local items = cfg.holder.items
+        if not cfg.open then
+            for _, item in ipairs(items) do
+                item:skip()
+            end
+            return
+        end
+        if not seen or not menuOpen() then
+            close()
+            return
+        end
+        local w = cfg.width
+        local content, count = 0, 0
+        for _, item in ipairs(items) do
+            if not item.hidden then
+                content = content + item:height(w - 24) + (count > 0 and 3 or 0)
+                count = count + 1
+            end
+        end
+        local h = 2 + POPUP_HEAD + 7 + content + 13
+        local x, y = fitOnScreen(self.anchor.x + 1, self.anchor.y + 15, w, h)
+        registerPopup(x, y, x + w, y + h, self.iconOwner, "left", close)
+        local cy = popupChrome(x, y, w, h, cfg.title) + 7
+        for _, item in ipairs(items) do
+            if item.hidden then
+                item:skip()
+            else
+                local ih = item:height(w - 24)
+                item:draw(x + 12, cy, w - 24)
+                cy = cy + ih + 3
+            end
+        end
+    end
+
+    addSurface(2, function()
+        element:drawPopup()
+    end)
+
+    if cfg.name or not attached then
+        table.insert(self.holder.items, element)
+    else
+        table.insert(self.right_holder.items, element)
+    end
+    addShown(cfg, element)
     return setmetatable(cfg, library)
 end
 
@@ -3914,6 +4351,7 @@ function library:button(properties)
     end
 
     table.insert(self.holder.items, element)
+    addShown(cfg, element)
     return setmetatable(cfg, library)
 end
 
@@ -3968,7 +4406,66 @@ function library:textbox(properties)
     if cfg.default then
         cfg.set(cfg.default)
     end
+    addShown(cfg, element)
     library.config_flags[cfg.flag] = cfg.set
+    return setmetatable(cfg, library)
+end
+
+function library:label(properties)
+    local cfg = {
+        lines = type(properties.lines) == "table" and properties.lines or { properties.text or properties.name or "" },
+        placeholder = properties.placeholder or "",
+    }
+    local element = Element.new("label")
+    local section, holder = self._section, self.holder
+
+    function element:height()
+        local rows = max(#cfg.lines, 1)
+        return rows * 12 + (rows - 1) * 3
+    end
+
+    function element:rowStarts(out, offset)
+        for i = 1, max(#cfg.lines, 1) do
+            out[#out + 1] = offset + (i - 1) * 15
+        end
+    end
+
+    function element:draw(x, y, w)
+        if #cfg.lines == 0 then
+            if cfg.placeholder ~= "" then
+                drawText(inkX(x + 13, cfg.placeholder), y, cfg.placeholder, COL.placeholder, true)
+            end
+            return
+        end
+        local room = w - 26
+        for i, line in ipairs(cfg.lines) do
+            local text = tostring(line)
+            if textWidth(text) > room then
+                text = string.sub(text, 1, max(0, floor(room / CHAR_W) - 3)) .. "..."
+            end
+            if text ~= "" then
+                drawText(inkX(x + 13, text), y + (i - 1) * 15, text, COL.text, true)
+            end
+        end
+    end
+
+    function cfg.set_text(text)
+        cfg.lines = { tostring(text) }
+    end
+
+    function cfg.set_lines(lines, reset)
+        cfg.lines = type(lines) == "table" and lines or {}
+        if reset and section then
+            for _, page in ipairs(section.pages) do
+                if page.holder == holder then
+                    page.scroll = 0
+                end
+            end
+        end
+    end
+
+    table.insert(self.holder.items, element)
+    addShown(cfg, element)
     return setmetatable(cfg, library)
 end
 
