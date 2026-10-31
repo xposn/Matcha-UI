@@ -11,9 +11,34 @@ local combat = window:tab({ name = "combat" })
 local visuals = window:tab({ name = "visuals" })
 local settings = window:tab({ name = "settings" })
 
-local aimbot = combat:section({ name = "aimbot", side = "left" })
+local status = window:widget({ name = "prediction", title = "prediction status", visible = false, lines = {
+    { label = "status", value = "tracking", color = rgb(120, 255, 120) },
+    { label = "target", value = "XxQueen_ALPHAXX2018" },
+    { label = "distance", value = "212m" },
+    { separator = true },
+    { label = "confidence", bar = 0.72, text = "72%" },
+} })
+
+local session = window:widget({ name = "session", title = "session", min_width = 140 })
+local started = os.clock()
+task.spawn(function()
+    while _G.InterceptionUI == library do
+        local up = math.floor(os.clock() - started)
+        session.set_lines({
+            { label = "uptime", value = string.format("%d:%02d", math.floor(up / 60), up % 60), align = "right" },
+            { label = "kills", value = "3", align = "right" },
+            { separator = true },
+            { label = "health", bar = 0.8, text = "80%", color = rgb(120, 255, 120) },
+            { label = "stamina", bar = 0.45, text = "45%", color = rgb(120, 200, 255) },
+        })
+        task.wait(1)
+    end
+end)
+
+local aimbot = combat:section({ name = "aimbot", side = "left", subtab_style = "bar" })
 aimbot:toggle({ name = "enabled", flag = "aim_enabled" })
-aimbot:keybind({ flag = "aim_key", key = Enum.KeyCode.E, mode = "hold", display = "aimbot" })
+aimbot:keybind({ flag = "aim_key", keys = { Enum.UserInputType.MouseButton1, Enum.UserInputType.MouseButton2 }, mode = "hold", display = "aimbot" })
+aimbot:toggle({ name = "show fov", flag = "aim_show_fov", default = true })
 aimbot:colorpicker({ flag = "aim_fov_color", color = rgb(255, 255, 255) })
 aimbot:slider({ flag = "aim_fov", min = 0, max = 500, default = 120, suffix = "px" })
 aimbot:slider({ name = "smoothness", flag = "aim_smooth", min = 1, max = 20, default = 5, interval = 0.5 })
@@ -21,22 +46,58 @@ aimbot:dropdown({ name = "hitpart", flag = "aim_hitpart", items = { "head", "tor
 aimbot:toggle({ name = "team check", flag = "aim_team" })
 local visibleMode
 aimbot:toggle({ name = "visible only", flag = "aim_visible", callback = function(on)
-    if visibleMode and visibleMode.set_shown then
+    if visibleMode then
         visibleMode.set_shown(on)
     end
 end })
 visibleMode = aimbot:dropdown({ flag = "aim_visible_mode", items = { "raycast", "occlusion" } })
-if visibleMode.set_shown then
-    visibleMode.set_shown(flags.aim_visible)
-end
+visibleMode.set_shown(flags.aim_visible)
+
+local prediction = aimbot:subtab({ name = "prediction" })
+prediction:toggle({ name = "bullet drop", flag = "pred_drop", default = true })
+prediction:toggle({ name = "target lead", flag = "pred_lead", default = true })
+prediction:toggle({ name = "show aim point", flag = "pred_show" })
+prediction:colorpicker({ flag = "pred_color", color = rgb(255, 60, 60) })
+prediction:toggle({ name = "status widget", flag = "pred_widget", callback = function(on)
+    status.set_visible(on)
+end })
 
 local trigger = combat:section({ name = "triggerbot", side = "right" })
 trigger:toggle({ name = "enabled", flag = "trigger_enabled" })
 trigger:keybind({ flag = "trigger_key", key = Enum.UserInputType.MouseButton2, mode = "hold", display = "triggerbot" })
-trigger:slider({ name = "delay", flag = "trigger_delay", min = 0, max = 300, default = 40, suffix = "ms" })
+local triggerSettings = trigger:gear()
+triggerSettings:slider({ name = "delay", flag = "trigger_delay", min = 0, max = 300, default = 40, suffix = "ms" })
+triggerSettings:slider({ name = "hit chance", flag = "trigger_chance", min = 0, max = 100, default = 100, suffix = "%" })
+triggerSettings:toggle({ name = "only while aiming", flag = "trigger_aiming" })
 trigger:button({ name = "test notification", callback = function()
     library:notification({ text = "triggerbot armed", time = 3 })
 end })
+
+local WEAPONS = {
+    rifles = { "AK-47", "AKM", "AUG", "FAL", "G3", "L85A1", "M14", "M16A2", "M4A1", "Mini-14", "SKS", "SVT-40", "XM177" },
+    smgs = { "MAC-10", "MP 40", "MP5", "MP5K", "PP-19 Bizon", "PPSh-41", "TEC-9", "UMP45", "UZI" },
+    pistols = { "Desert Eagle", "G17", "M1911", "M9", "Makarov", "Model 29", "P220", "Python" },
+}
+local weapons = combat:section({ name = "weapons", side = "right" })
+local weaponList
+local function showWeapons(category)
+    if not weaponList then
+        return
+    end
+    local lines = {}
+    for group, list in pairs(WEAPONS) do
+        if category == "all" or category == group then
+            for _, weapon in ipairs(list) do
+                lines[#lines + 1] = weapon
+            end
+        end
+    end
+    table.sort(lines)
+    weaponList.set_lines(lines, true)
+end
+weapons:dropdown({ name = "category", flag = "weapon_category", items = { "all", "rifles", "smgs", "pistols" }, default = "all", callback = showWeapons })
+weaponList = weapons:label({ lines = {}, placeholder = "none" })
+showWeapons(flags.weapon_category)
 
 local player = visuals:section({ name = "player", side = "left" })
 player:toggle({ name = "enable", flag = "player_enable" })
@@ -47,6 +108,14 @@ player:toggle({ name = "distance", flag = "player_distance", default = true })
 player:colorpicker({ flag = "player_distance_color", color = rgb(255, 255, 255) })
 player:toggle({ name = "equipped", flag = "player_equipped", default = true })
 player:colorpicker({ flag = "player_equipped_color", color = rgb(255, 255, 255) })
+player:toggle({ name = "chams", flag = "player_chams" })
+player:colorpicker({ flag = "player_chams_fill", color = rgb(255, 60, 60) })
+player:colorpicker({ flag = "player_chams_outline", color = rgb(255, 255, 255) })
+player:keybind({ flag = "player_chams_key", mode = "toggle", display = "chams" })
+local chams = player:gear()
+chams:slider({ name = "fill transparency", flag = "player_chams_fill_t", min = 0, max = 100, default = 50, suffix = "%" })
+chams:toggle({ name = "visible only", flag = "player_chams_visible" })
+chams:dropdown({ name = "material", flag = "player_chams_material", items = { "flat", "glow", "wireframe" }, default = "flat" })
 player:toggle({ name = "show players on map", flag = "player_map" })
 player:dropdown({ flag = "player_map_info", items = { "name", "equipped" }, multi = true, default = { "name", "equipped" } })
 player:toggle({ name = "info list", flag = "player_info_list", default = true, callback = function(bool)
@@ -83,8 +152,24 @@ end })
 menu:dropdown({ flag = "watermark_position", items = { "top left", "top right", "top center", "bottom left", "bottom right", "bottom center", "draggable" }, default = "top left", callback = function(position)
     window.set_watermark_position(position)
 end })
+menu:dropdown({ flag = "watermark_info", items = { "user", "display", "game", "ping", "fps" }, multi = true, default = { "user", "display", "game", "ping", "fps" }, callback = function(list)
+    window.set_watermark_info(list)
+end })
 menu:toggle({ name = "keybind list", flag = "keybind_list", default = true, callback = function(bool)
     window.toggle_list(bool)
+end })
+menu:toggle({ name = "notification preview", flag = "notification_preview", callback = function(bool)
+    window.toggle_notification_preview(bool)
+end })
+
+local widgets = settings:section({ name = "widgets", side = "left" })
+widgets:toggle({ name = "session", flag = "widget_session", default = true, callback = function(on)
+    session.set_visible(on)
+end })
+widgets:toggle({ name = "dock session", flag = "widget_session_dock", callback = function(on)
+    if session.is_docked() ~= (on == true) then
+        session.dock(on)
+    end
 end })
 
 local configs = settings:section({ name = "configs", side = "right" })
