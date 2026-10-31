@@ -32,6 +32,8 @@ end })
 
 The keybind and colorpicker there have no name, so they sit on the right side of the toggle above them. A slider or dropdown with no name goes under that toggle instead.
 
+Double-click a slider to type a value. Enter or clicking somewhere else sets it, and Escape cancels.
+
 Every element keeps its value in `library.flags` under its flag, so you can check things like `library.flags.aim_enabled` from anywhere. Keybinds store a table with `key`, `mode` and `active`.
 
 A keybind can have more than one key. Pass `keys` instead of `key`:
@@ -59,11 +61,42 @@ local friendlies = enemies:subtab({ name = "friendlies" })
 local client = enemies:subtab({ name = "client" })
 ```
 
+## Widgets
+
+A widget is a small panel on the screen, like the info list, that shows whatever rows you give it:
+
+```lua
+local status = window:widget({ name = "prediction", title = "prediction status" })
+status.set_lines({
+    { label = "status", value = "tracking", color = Color3.fromRGB(120, 255, 120) },
+    { label = "target", value = "someone" },
+    { label = "distance", value = "212m" },
+    { separator = true },
+    { label = "confidence", bar = 0.72, text = "72%" },
+    "plain text works too",
+})
+```
+
+Rows can be:
+
+- a plain string, or `{ text = "...", color = ..., align = "left" | "center" | "right" }`
+- `{ label = "name", value = "text" }` with an optional value `color`, `label_color`, `align = "right"` to push the value to the right edge, and a `list` of extra lines shown under the value
+- `{ label = "name", bar = 0.5, text = "50%" }`, a bar from 0 to 1 with an optional `color`. All bars in a widget line up, even when their labels or texts are different lengths
+- `{ separator = true }`, a thin line
+
+Call `set_lines` again whenever the data changes. The widget also has `set_title(text)`, `set_visible(bool)` (or `toggle`), `dock(bool)`, `is_docked()`, `set_position(x, y)` and `remove()`.
+
+Pass `visible = false` to start it hidden, `docked = true` to stack it beside the menu, `x`/`y` for a starting spot, and `min_width` to keep it from getting narrower. A widget with no `x` stays against the right edge of the screen even when it gets wider, and widgets with no `y` stack down the middle of the right side without covering each other. With the menu open you can drag any widget, which undocks it. Positions are saved in configs by widget name, so give each widget its own name.
+
+The info list is a widget too. `window.set_info(title, lines)` and `window.toggle_info_list(bool)` still work, and `window.info_widget` gives you the widget itself.
+
 ## Other stuff
 
+- The menu, watermark, keybind list, ESP preview, widgets and popups always stay on screen, even when dragged, resized or after the game window shrinks
 - `window.toggle_watermark(true)` and `window.set_watermark_position("top right")`
 - `window.set_watermark_info({ "user", "display", "game", "ping", "fps" })` picks what the watermark shows
 - `window.toggle_list(true)` shows the keybind list
+- `window.toggle_notification_preview(true)` shows a sample notification that stays up and can be dragged with the menu open, and `window.set_notification_preview_text(text)` changes what it says
 - `window.set_info(title, lines)` and `window.toggle_info_list(true)` for the info box
 - `window.set_menu_visibility(false)` hides the menu
 - `library:get_config()` and `library:load_config(text)` for saving and loading

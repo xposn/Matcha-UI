@@ -837,14 +837,14 @@ end
 
 local Focus = { box = nil, blink = 0 }
 
-local function blurBox(enter)
+local function blurBox(enter, cancelled)
     local box = Focus.box
     if not box then
         return
     end
     Focus.box = nil
     if box.onFocusLost then
-        local ok, err = pcall(box.onFocusLost, enter)
+        local ok, err = pcall(box.onFocusLost, enter, cancelled)
         if not ok then
             reportError(err)
         end
@@ -868,6 +868,7 @@ local function typeKey(vk)
     if not box then
         return
     end
+    Focus.blink = tick()
     if vk == 0x08 then
         if #box.text > 0 then
             box.setText(string.sub(box.text, 1, -2))
@@ -875,7 +876,7 @@ local function typeKey(vk)
     elseif vk == 0x0D then
         blurBox(true)
     elseif vk == 0x1B then
-        blurBox(false)
+        blurBox(false, true)
     else
         local pair = CHAR_MAP[vk]
         if pair then
@@ -1127,10 +1128,26 @@ local function makeResizer(target)
     end
     function owner.onDragMove(mx, my)
         local vw, vh = Util.viewport()
-        target.w = clamp(owner.ow + (mx - owner.sx), target.minW, max(target.minW, vw))
-        target.h = clamp(owner.oh + (my - owner.sy), target.minH, max(target.minH, vh))
+        target.w = clamp(owner.ow + (mx - owner.sx), target.minW, max(target.minW, vw - target.x - 1))
+        target.h = clamp(owner.oh + (my - owner.sy), target.minH, max(target.minH, vh - target.y - 1))
     end
     return owner
+end
+
+local function fitOnScreen(x, y, w, h)
+    local vw, vh = Util.viewport()
+    return clamp(x, 1, max(1, vw - w - 1)), clamp(y, 1, max(1, vh - h - 1))
+end
+
+local function keepOnScreen(target, w, h)
+    target.x, target.y = fitOnScreen(target.x, target.y, w, h)
+end
+
+local function drawCaret(x, y0, y1)
+    if (tick() - Focus.blink) % 1 < 0.5 then
+        fillRect(x - 1, y0 - 1, x + 2, y1 + 1, COL.c0)
+        fillRect(x, y0, x + 1, y1, COL.text)
+    end
 end
 
 local function drawFieldText(x, y, w, h, text, placeholder, focused, tight)
@@ -1151,9 +1168,9 @@ local function drawFieldText(x, y, w, h, text, placeholder, focused, tight)
     else
         drawText(tx, ty, shown, color, true)
     end
-    if focused and (tick() - Focus.blink) % 1 < 0.5 then
-        local cx = tx + tw + 1
-        fillRect(cx, y + 2, cx + 1, y + h - 2, COL.text)
+    if focused then
+        Focus.drawn = true
+        drawCaret(tx + tw + 1, y + 2, y + h - 2)
     end
 end
 
@@ -1540,7 +1557,7 @@ local function drawKeybindList()
     if not KeybindList.visible then
         return
     end
-    local _, vh = Util.viewport()
+    local vw, vh = Util.viewport()
     local width, count = textWidth("keybinds"), 0
     for _, entry in ipairs(KeybindList.entries) do
         if listed(entry) then
@@ -1561,6 +1578,8 @@ local function drawKeybindList()
     end
     local w, h = width + 40, count * 14 + 25
     KeybindList.py = KeybindList.py or GUI_INSET + (vh - GUI_INSET) * 0.5
+    KeybindList.x = clamp(KeybindList.x, 1, max(1, vw - w - 1))
+    KeybindList.py = clamp(KeybindList.py, h * 0.5 + 1, max(h * 0.5 + 1, vh - h * 0.5 - 1))
     local x, y = KeybindList.x, KeybindList.py - h * 0.5
     KeybindList.w, KeybindList.h = w, h
     if menuOpen() then
@@ -1600,74 +1619,304 @@ function KeybindList.drag.onDragMove(mx, my)
     KeybindList.py = KeybindList.drag.oy + (my - KeybindList.drag.sy)
 end
 
-local InfoList = { visible = false, x = nil, y = nil, docked = true, title = "info list", lines = {} }
+local Widgets = { list = {}, byName = {}, pending = {}, seq = 0 }
+local WIDGET_ROW = 14
 
-local function drawInfoList()
-    if not InfoList.visible then
-        return
-    end
-    local vw, vh = Util.viewport()
-    local lineW, rows = 0, 0
-    for _, line in ipairs(InfoList.lines) do
-        if line.label then
-            local head = textWidth(line.label) + 2 * CHAR_W
-            lineW = max(lineW, head + textWidth(line.value))
-            for _, item in ipairs(line.list) do
-                lineW = max(lineW, head + textWidth(item))
+local function widgetColor(color, fallback)
+    return typeof(color) == "Color3" and packColor(color) or fallback
+end
+
+local function widgetRows(lines)
+    local out = {}
+    for _, line in ipairs(type(lines) == "table" and lines or {}) do
+        if type(line) ~= "table" then
+            out[#out + 1] = { kind = "text", text = tostring(line), color = COL.text, align = "left" }
+        elseif line.separator then
+            out[#out + 1] = { kind = "separator" }
+        elseif line.bar ~= nil then
+            out[#out + 1] = {
+                kind = "bar",
+                label = line.label ~= nil and tostring(line.label) or nil,
+                fraction = clamp(tonumber(line.bar) or 0, 0, 1),
+                text = line.text ~= nil and tostring(line.text) or nil,
+                color = widgetColor(line.color, nil),
+            }
+        elseif line.label ~= nil then
+            local list = {}
+            for _, item in ipairs(type(line.list) == "table" and line.list or {}) do
+                list[#list + 1] = tostring(item)
             end
-            rows = rows + 1 + #line.list
+            out[#out + 1] = {
+                kind = "label",
+                label = tostring(line.label),
+                value = tostring(line.value or ""),
+                list = list,
+                color = widgetColor(line.color, COL.white),
+                labelColor = widgetColor(line.label_color, nil),
+                align = line.align,
+            }
         else
-            lineW = max(lineW, textWidth(line.text))
-            rows = rows + 1
+            out[#out + 1] = { kind = "text", text = tostring(line.text or line[1] or ""), color = widgetColor(line.color, COL.text), align = line.align or "left" }
         end
     end
-    local w = max(textWidth(InfoList.title) + 40, lineW + 24)
-    local h = rows * 14 + 25
-    local win = library.main_frame[1]
-    if InfoList.docked and win then
-        InfoList.x, InfoList.y = win.x + win.w + 5, win.y
+    return out
+end
+
+local function measureWidget(widget)
+    local width, height = 0, 0
+    local barHead, barText = 0, 0
+    for _, row in ipairs(widget.rows) do
+        if row.kind == "bar" then
+            barHead = max(barHead, row.label and textWidth(row.label) + 2 * CHAR_W or 0)
+            barText = max(barText, row.text and textWidth(row.text) + CHAR_W or 0)
+        end
     end
-    InfoList.y = InfoList.y or GUI_INSET + (vh - GUI_INSET - h) * 0.5
-    InfoList.x = InfoList.x or vw - 20 - w
-    local x, y = InfoList.x, InfoList.y
+    widget.barHead, widget.barText = barHead, barText
+    for _, row in ipairs(widget.rows) do
+        if row.kind == "separator" then
+            height = height + 8
+        elseif row.kind == "label" then
+            local head = textWidth(row.label) + 2 * CHAR_W
+            width = max(width, head + textWidth(row.value))
+            for _, item in ipairs(row.list) do
+                width = max(width, head + textWidth(item))
+            end
+            height = height + WIDGET_ROW * (1 + #row.list)
+        elseif row.kind == "bar" then
+            width = max(width, barHead + 60 + barText)
+            height = height + WIDGET_ROW
+        else
+            width = max(width, textWidth(row.text))
+            height = height + WIDGET_ROW
+        end
+    end
+    return width, height
+end
+
+local function drawWidget(widget, x, y, w, h)
     if menuOpen() then
-        region(x, y, w, h, InfoList.drag)
+        region(x, y, w, h, widget.drag)
     end
     frame(x, y, w, h, COL.c40, COL.c0)
     fillRect(x, y, x + w, y + 2, accentColor())
     fillRect(x + 2, y + 2, x + w - 2, y + h - 2, COL.c26)
     frame(x + 4, y + 4, w - 8, h - 8, COL.c26, COL.c57)
     local ly = y + 14
-    for _, line in ipairs(InfoList.lines) do
-        if line.label then
-            local head = line.label .. ":"
+    for _, row in ipairs(widget.rows) do
+        if row.kind == "separator" then
+            fillRect(x + 10, ly + 2, x + w - 10, ly + 3, COL.c57)
+            ly = ly + 8
+        elseif row.kind == "label" then
+            local head = row.label .. ":"
             local lx = inkX(x + 12, head)
-            drawText(lx, ly, head, accentColor(), true)
-            local vx = lx + textWidth(head) + CHAR_W
-            drawText(vx, ly, line.value, COL.white, true)
-            local ink = vx + glyphBearings(string.sub(line.value, 1, 1))
-            for _, item in ipairs(line.list) do
-                ly = ly + 14
-                drawText(inkX(ink - 1, item), ly, item, accentColor(140 / 255), true)
+            drawText(lx, ly, head, row.labelColor or accentColor(), true)
+            if row.align == "right" then
+                drawText(x + w - 12 - textWidth(row.value), ly, row.value, row.color, true)
+                for _, item in ipairs(row.list) do
+                    ly = ly + WIDGET_ROW
+                    drawText(x + w - 12 - textWidth(item), ly, item, accentColor(140 / 255), true)
+                end
+            else
+                local vx = lx + textWidth(head) + CHAR_W
+                drawText(vx, ly, row.value, row.color, true)
+                local ink = vx + glyphBearings(string.sub(row.value, 1, 1))
+                for _, item in ipairs(row.list) do
+                    ly = ly + WIDGET_ROW
+                    drawText(inkX(ink - 1, item), ly, item, accentColor(140 / 255), true)
+                end
             end
+            ly = ly + WIDGET_ROW
+        elseif row.kind == "bar" then
+            if row.label then
+                local head = row.label .. ":"
+                drawText(inkX(x + 12, head), ly, head, accentColor(), true)
+            end
+            if row.text then
+                drawText(x + w - 12 - textWidth(row.text), ly, row.text, COL.text, true)
+            end
+            local bx = x + 12 + widget.barHead
+            local bw = max(0, x + w - 12 - widget.barText - bx)
+            frame(bx, ly + 4, bw, 4, COL.c22, COL.c56)
+            if row.fraction > 0 then
+                frame(bx, ly + 4, bw * row.fraction, 4, row.color or accentColor(), COL.fillBorder)
+            end
+            ly = ly + WIDGET_ROW
         else
-            drawText(inkX(x + 12, line.text), ly, line.text, line.color, true)
+            if row.align == "center" then
+                alignedText(x, ly, w, 0, row.text, row.color, 0.5, 0, true)
+            elseif row.align == "right" then
+                drawText(x + w - 12 - textWidth(row.text), ly, row.text, row.color, true)
+            else
+                drawText(inkX(x + 12, row.text), ly, row.text, row.color, true)
+            end
+            ly = ly + WIDGET_ROW
         end
-        ly = ly + 14
     end
     fillRect(x, y + 1, x + w, y + 2, COL.black50)
-    alignedText(x, y - 1, w, 1, InfoList.title, COL.text, 0.5, 0.5, true)
+    alignedText(x, y - 1, w, 1, widget.title, COL.text, 0.5, 0.5, true)
 end
 
-InfoList.drag = {}
-function InfoList.drag.onDragStart(mx, my)
-    InfoList.docked = false
-    InfoList.drag.sx, InfoList.drag.sy = mx, my
-    InfoList.drag.ox, InfoList.drag.oy = InfoList.x, InfoList.y
+local function drawWidgets()
+    local vw, vh = Util.viewport()
+    local win = library.main_frame[1]
+    local dockY = win and win.y
+    local stack, stackH = {}, 0
+    for _, widget in ipairs(Widgets.list) do
+        if widget.visible then
+            local cw, ch = measureWidget(widget)
+            widget.w = max(textWidth(widget.title) + 40, cw + 24, widget.minWidth)
+            widget.h = ch + 25
+            if widget.docked and win then
+                local dx = win.x + win.w + 5
+                if dx + widget.w > vw - 1 then
+                    dx = win.x - 5 - widget.w
+                end
+                widget.x, widget.y = dx, dockY
+                dockY = dockY + widget.h + 5
+            else
+                if widget.autoX then
+                    widget.x = vw - 20 - widget.w
+                end
+                if widget.autoY then
+                    stack[#stack + 1] = widget
+                    stackH = stackH + widget.h + 5
+                end
+            end
+        end
+    end
+    local stackY = GUI_INSET + max(0, (vh - GUI_INSET - stackH + 5) * 0.5)
+    for _, widget in ipairs(stack) do
+        widget.y = stackY
+        stackY = stackY + widget.h + 5
+    end
+    for _, widget in ipairs(Widgets.list) do
+        if widget.visible then
+            keepOnScreen(widget, widget.w, widget.h)
+            drawWidget(widget, widget.x, widget.y, widget.w, widget.h)
+        end
+    end
 end
-function InfoList.drag.onDragMove(mx, my)
-    InfoList.x = InfoList.drag.ox + (mx - InfoList.drag.sx)
-    InfoList.y = InfoList.drag.oy + (my - InfoList.drag.sy)
+
+local function placeWidget(widget, saved)
+    if type(saved) ~= "table" then
+        return
+    end
+    if type(saved.docked) == "boolean" then
+        widget.docked = saved.docked
+    end
+    if not widget.docked then
+        local vw, vh = Util.viewport()
+        if type(saved.x) == "number" and saved.x == saved.x then
+            widget.x = clamp(saved.x, 0, max(0, vw - (widget.w or 120)))
+            widget.autoX = false
+        end
+        if type(saved.y) == "number" and saved.y == saved.y then
+            widget.y = clamp(saved.y, 0, max(0, vh - (widget.h or 60)))
+            widget.autoY = false
+        end
+    end
+end
+
+local function createWidget(properties)
+    properties = type(properties) == "table" and properties or {}
+    Widgets.seq = Widgets.seq + 1
+    local name = tostring(properties.name or properties.title or ("widget " .. Widgets.seq))
+    local existing = Widgets.byName[name]
+    if existing then
+        return existing.api
+    end
+    local widget = {
+        name = name,
+        title = tostring(properties.title or name),
+        visible = properties.visible ~= false,
+        docked = properties.docked == true,
+        permanent = properties.permanent == true,
+        x = tonumber(properties.x),
+        y = tonumber(properties.y),
+        minWidth = tonumber(properties.min_width) or 0,
+        rows = widgetRows(properties.lines),
+        drag = {},
+    }
+    widget.autoX, widget.autoY = widget.x == nil, widget.y == nil
+    function widget.drag.onDragStart(mx, my)
+        local drag = widget.drag
+        drag.sx, drag.sy, drag.ox, drag.oy, drag.moved = mx, my, widget.x, widget.y, false
+    end
+    function widget.drag.onDragMove(mx, my)
+        local drag = widget.drag
+        if not drag.moved then
+            if mx == drag.sx and my == drag.sy then
+                return
+            end
+            drag.moved = true
+            widget.docked, widget.autoX, widget.autoY = false, false, false
+        end
+        widget.x = drag.ox + (mx - drag.sx)
+        widget.y = drag.oy + (my - drag.sy)
+    end
+    local api = { name = name }
+    function api.set_title(text)
+        widget.title = tostring(text or "")
+    end
+    function api.set_lines(lines)
+        widget.rows = widgetRows(lines)
+    end
+    function api.set_visible(bool)
+        widget.visible = bool and true or false
+    end
+    api.toggle = api.set_visible
+    function api.is_visible()
+        return widget.visible
+    end
+    function api.dock(bool)
+        widget.docked = bool and true or false
+        if not widget.docked and widget.x and widget.y then
+            widget.autoX, widget.autoY = false, false
+        end
+    end
+    function api.is_docked()
+        return widget.docked
+    end
+    function api.set_position(x, y)
+        widget.docked = false
+        if tonumber(x) then
+            widget.x, widget.autoX = tonumber(x), false
+        end
+        if tonumber(y) then
+            widget.y, widget.autoY = tonumber(y), false
+        end
+    end
+    function api.remove()
+        if widget.permanent then
+            widget.visible = false
+            return
+        end
+        if Widgets.byName[name] == widget then
+            Widgets.byName[name] = nil
+        end
+        for i = #Widgets.list, 1, -1 do
+            if Widgets.list[i] == widget then
+                table.remove(Widgets.list, i)
+            end
+        end
+    end
+    widget.api = api
+    Widgets.list[#Widgets.list + 1] = widget
+    Widgets.byName[name] = widget
+    if Widgets.pending[name] then
+        placeWidget(widget, Widgets.pending[name])
+        Widgets.pending[name] = nil
+    end
+    return api
+end
+
+local InfoWidget = createWidget({ name = "info list", visible = false, docked = true, permanent = true })
+
+function library:widget(properties)
+    if not Widgets.surface then
+        Widgets.surface = addSurface(2, drawWidgets)
+    end
+    return createWidget(properties)
 end
 
 local Layout = { watermarks = {}, previews = {} }
@@ -1688,12 +1937,18 @@ function library.layout_snapshot()
     for i, panel in ipairs(Layout.previews) do
         previews[i] = { x = panel.x, y = panel.y, w = panel.w, h = panel.h }
     end
+    local widgets = {}
+    for _, widget in ipairs(Widgets.list) do
+        widgets[widget.name] = { x = not widget.autoX and widget.x or nil, y = not widget.autoY and widget.y or nil, docked = widget.docked }
+    end
     return {
         windows = windows,
         watermarks = watermarks,
         previews = previews,
         keybinds = { x = KeybindList.x, y = KeybindList.py or GUI_INSET + (vh - GUI_INSET) * 0.5 },
-        info = { x = InfoList.x, y = InfoList.y, docked = InfoList.docked },
+        info = widgets["info list"],
+        widgets = widgets,
+        notification = Layout.notePreview and { x = Layout.notePreview.x, y = Layout.notePreview.y } or nil,
     }
 end
 
@@ -1745,18 +2000,57 @@ function library.apply_layout(layout)
             KeybindList.py = clamp(keybinds.y, 0, vh)
         end
     end
-    local info = layout.info
-    if type(info) == "table" then
-        if type(info.docked) == "boolean" then
-            InfoList.docked = info.docked
-        end
-        if not InfoList.docked then
-            place(InfoList, info, 120, 60)
+    if Layout.notePreview then
+        place(Layout.notePreview, layout.notification, 120, 26)
+    end
+    local saved = type(layout.widgets) == "table" and layout.widgets or {}
+    if type(layout.info) == "table" and saved["info list"] == nil then
+        saved["info list"] = layout.info
+    end
+    for name, entry in pairs(saved) do
+        local widget = Widgets.byName[name]
+        if widget then
+            placeWidget(widget, entry)
+        elseif type(entry) == "table" then
+            Widgets.pending[name] = entry
         end
     end
 end
 
 local Notifications = { inset = 0 }
+local NOTE_H = 26
+
+local function drawNotification(x, y, w, text, remaining)
+    local h = NOTE_H
+    frame(x, y, w, h, COL.c40, COL.c0)
+    fillRect(x + 2, y + 2, x + w - 2, y + h - 2, COL.c26)
+    frame(x + 4, y + 4, w - 8, h - 8, COL.c26, COL.c57)
+    drawText(inkX(x + 10, text), y + 6, text, COL.text, true)
+    if remaining > 0 then
+        fillRect(x + 4, y + h - 5, x + 4 + (w - 8) * remaining, y + h - 4, accentColor())
+    end
+    fillRect(x, y, x + w, y + 2, accentColor())
+    fillRect(x, y + 1, x + w, y + 2, COL.black50)
+end
+
+local NotePreview = { visible = false, x = nil, y = nil, text = "this is a notification" }
+NotePreview.drag = makeDraggable(NotePreview)
+Layout.notePreview = NotePreview
+
+local function drawNotePreview()
+    if not NotePreview.visible then
+        return
+    end
+    local _, vh = Util.viewport()
+    local w = textWidth(NotePreview.text) + 24
+    NotePreview.x = NotePreview.x or 20
+    NotePreview.y = NotePreview.y or vh - 20 - NOTE_H - Notifications.inset
+    keepOnScreen(NotePreview, w, NOTE_H)
+    if menuOpen() then
+        region(NotePreview.x, NotePreview.y, w, NOTE_H, NotePreview.drag)
+    end
+    drawNotification(NotePreview.x, NotePreview.y, w, NotePreview.text, 1 - (tick() % 5) / 5)
+end
 
 function library:notification(properties)
     local cfg = {
@@ -1764,7 +2058,7 @@ function library:notification(properties)
         text = tostring(properties.text or properties.name or ""),
     }
     local now = tick()
-    local noteH = 26
+    local noteH = NOTE_H
     local function slotY(slot)
         local _, vh = Util.viewport()
         return vh - 20 - noteH - Notifications.inset - slot * (noteH + 4)
@@ -1815,19 +2109,11 @@ function library:notification(properties)
         else
             note.y = target
         end
-        local w, h = note.w, noteH
+        local w = note.w
         local x, y = 20 - anchor * (w + 22), note.y
         local remaining = clamp(1 - age / cfg.time, 0, 1)
         Render.alpha = alpha
-        frame(x, y, w, h, COL.c40, COL.c0)
-        fillRect(x + 2, y + 2, x + w - 2, y + h - 2, COL.c26)
-        frame(x + 4, y + 4, w - 8, h - 8, COL.c26, COL.c57)
-        drawText(inkX(x + 10, note.text), y + 6, note.text, COL.text, true)
-        if remaining > 0 then
-            fillRect(x + 4, y + h - 5, x + 4 + (w - 8) * remaining, y + h - 4, accentColor())
-        end
-        fillRect(x, y, x + w, y + 2, accentColor())
-        fillRect(x, y + 1, x + w, y + 2, COL.black50)
+        drawNotification(x, y, w, note.text, remaining)
         Render.alpha = 1
     end
 
@@ -1940,6 +2226,8 @@ function library:window(properties)
             local vw, vh = Util.viewport()
             watermark.x = round(20 + (vw - 40 - w) * anchor[1])
             watermark.y = round(20 + (vh - 40 - h) * anchor[2])
+        else
+            keepOnScreen(watermark, w, h)
         end
         Notifications.inset = watermark.position == "bottom left" and h + 4 or 0
         local x, y = watermark.x, watermark.y
@@ -2022,6 +2310,7 @@ function library:window(properties)
         if not window.visible then
             return
         end
+        keepOnScreen(window, window.w, window.h)
         local x, y, w, h = window.x, window.y, window.w, window.h
         region(x, y, w, h, window.drag)
         frame(x, y, w, h, COL.c40, COL.c8)
@@ -2066,6 +2355,7 @@ function library:window(properties)
         if not p.visible then
             return
         end
+        keepOnScreen(p, p.w, p.h)
         local x, y, w, h = p.x, p.y, p.w, p.h
         if menuOpen() then
             region(x, y, w, h, p.drag)
@@ -2139,8 +2429,12 @@ function library:window(properties)
 
     addSurface(1, drawEspPreview)
 
-    if not InfoList.surface then
-        InfoList.surface = addSurface(2, drawInfoList)
+    if not Widgets.surface then
+        Widgets.surface = addSurface(2, drawWidgets)
+    end
+
+    if not NotePreview.surface then
+        NotePreview.surface = addSurface(2, drawNotePreview)
     end
 
     if not KeybindList.surface then
@@ -2198,27 +2492,23 @@ function library:window(properties)
     end
 
     function cfg.toggle_info_list(bool)
-        InfoList.visible = bool and true or false
+        InfoWidget.set_visible(bool)
+    end
+
+    function cfg.toggle_notification_preview(bool)
+        NotePreview.visible = bool and true or false
+    end
+
+    function cfg.set_notification_preview_text(text)
+        NotePreview.text = tostring(text or "")
     end
 
     function cfg.set_info(title, lines)
-        InfoList.title = tostring(title or "")
-        local out = {}
-        for _, line in ipairs(lines or {}) do
-            if type(line) == "table" and line.label then
-                local list = {}
-                for _, item in ipairs(line.list or {}) do
-                    list[#list + 1] = tostring(item)
-                end
-                out[#out + 1] = { label = tostring(line.label), value = tostring(line.value or ""), list = list }
-            elseif type(line) == "table" then
-                out[#out + 1] = { text = tostring(line.text or line[1] or ""), color = line.color and packColor(line.color) or COL.text }
-            else
-                out[#out + 1] = { text = tostring(line), color = COL.text }
-            end
-        end
-        InfoList.lines = out
+        InfoWidget.set_title(title)
+        InfoWidget.set_lines(lines)
     end
+
+    cfg.info_widget = InfoWidget
 
     function cfg.toggle_watermark(bool)
         watermark.visible = bool and true or false
@@ -2597,9 +2887,11 @@ function library:slider(properties)
     local element = Element.new("slider")
     element.fraction = 0
     element.text = ""
+    element.lastPress = nil
     element.barOwner = {}
     element.addOwner = {}
     element.subOwner = {}
+    local input = { text = "", owner = element.barOwner }
 
     function element:barHeight()
         return 10
@@ -2630,6 +2922,26 @@ function library:slider(properties)
         local aw = (sw - 4) * self.fraction
         fillRect(sx, sy, sx + fw, sy + 8, COL.c19)
         frame(sx + 2, sy + 2, aw, 4, accentColor(), COL.fillBorder)
+        if Focus.box == input then
+            Focus.drawn = true
+            local text, suffix = input.text, cfg.suffix
+            local caret = text ~= "" and textWidth(text) + 1 or 0
+            local left = text ~= "" and glyphBearings(string.sub(text, 1, 1)) or 0
+            local right, at = caret + 1, nil
+            if suffix ~= "" then
+                local slb = glyphBearings(string.sub(suffix, 1, 1))
+                local _, srb = glyphBearings(string.sub(suffix, -1))
+                at = caret + 3 - slb
+                right = at + textWidth(suffix) - CHAR_W + srb + 1
+            end
+            local tx = round(clamp(sx + 2 + aw + 0.5 - (left + right) * 0.5, round(sx) - left, round(sx + sw) - right))
+            drawText(tx, sy, text, COL.text, true)
+            if at then
+                drawText(tx + at, sy, suffix, COL.text, true)
+            end
+            drawCaret(tx + caret, sy + 2, sy + 10)
+            return
+        end
         local tw = textWidth(self.text)
         local lb = glyphBearings(string.sub(self.text, 1, 1))
         local _, rb = glyphBearings(string.sub(self.text, -1))
@@ -2657,12 +2969,47 @@ function library:slider(properties)
         cfg.callback(flags[cfg.flag])
     end
 
+    function input.setText(text)
+        if #text <= 10 and not string.find(text, "[^%d%.%-]") then
+            input.text = text
+        end
+    end
+
+    function input.onFocusLost(_, cancelled)
+        element.lastPress = nil
+        local value = not cancelled and tonumber(input.text)
+        if value then
+            cfg.set(value)
+        end
+    end
+
+    function element.barOwner.onDown(mx, my)
+        if Focus.box == input then
+            return
+        end
+        local now, last = tick(), element.lastPress
+        if last and not last.moved and now - last.at < 0.4 and math.abs(mx - last.x) <= 4 and math.abs(my - last.y) <= 4 then
+            element.lastPress = nil
+            if cfg.value ~= last.value then
+                cfg.set(last.value)
+            end
+            input.text = ""
+            focusBox(input)
+            return
+        end
+        element.lastPress = { at = now, x = mx, y = my, value = cfg.value, moved = false }
+    end
+
     function element.barOwner.onDragStart()
         cfg.dragging = true
     end
 
-    function element.barOwner.onDragMove(mx)
-        if cfg.dragging and element.trackW and element.trackW > 0 then
+    function element.barOwner.onDragMove(mx, my)
+        local press = element.lastPress
+        if press and not press.moved and (math.abs(mx - press.x) > 2 or math.abs(my - press.y) > 2) then
+            press.moved = true
+        end
+        if cfg.dragging and Focus.box ~= input and element.trackW and element.trackW > 0 then
             local size_x = (mx - element.trackX) / element.trackW
             cfg.set(((cfg.max - cfg.min) * size_x) + cfg.min)
         end
@@ -2782,6 +3129,11 @@ function library:dropdown(properties)
         local a = element.anchor
         local x, y, w = a.x, a.y + DROPDOWN_H + 2, a.w
         local h = popupHeight(#options)
+        local _, vh = Util.viewport()
+        if y + h > vh - 1 and a.y - h - 2 >= 1 then
+            y = a.y - h - 2
+        end
+        x, y = fitOnScreen(x, y, w, h)
         registerPopup(x, y, x + w, y + h, element.buttonOwner, "left", closeList)
         local oy = popupChrome(x, y, w, h)
         for _, option in ipairs(options) do
@@ -3061,6 +3413,7 @@ function library:colorpicker(properties)
         end
         local x, y, w = element.menuPos.x, element.menuPos.y, 73
         local hgt = popupHeight(#menuOptions, "color")
+        x, y = fitOnScreen(x, y, w, hgt)
         registerPopup(x, y, x + w, y + hgt, element.iconOwner, "right", closeMenu)
         local oy = popupChrome(x, y, w, hgt, "color")
         for i, option in ipairs(menuOptions) do
@@ -3077,6 +3430,7 @@ function library:colorpicker(properties)
         if not cfg.open then
             return
         end
+        keepOnScreen(element.pickerPos, 142, 134)
         local x, y = element.pickerPos.x, element.pickerPos.y
         local Color = element.color
         registerPopup(x, y, x + 142, y + 134, element.iconOwner, "left", closePicker)
@@ -3416,6 +3770,7 @@ function library:keybind(properties)
         local opener = cfg.popupSlot or slots[1]
         local x, y, w = opener.x, element.anchor.y + 15, 57
         local hgt = popupHeight(#modeOptions, "mode")
+        x, y = fitOnScreen(x, y, w, hgt)
         registerPopup(x, y, x + w, y + hgt, opener.owner, "right", closeModes)
         local oy = popupChrome(x, y, w, hgt, "mode")
         for _, option in ipairs(modeOptions) do
@@ -3683,6 +4038,7 @@ local function onRender()
     Render.beginFrame()
     Hit.n = 0
     Popups.n = 0
+    Focus.drawn = false
     local list = Surfaces.list
     local snapshot = {}
     for i = 1, #list do
@@ -3699,6 +4055,9 @@ local function onRender()
             Render.clip = nil
             table.clear(Render.clipStack)
         end
+    end
+    if Focus.box and not Focus.drawn then
+        blurBox(false, true)
     end
     Render.endFrame()
     dispatchMouse()
